@@ -1352,6 +1352,7 @@ lwip_netconn_do_connect(void *m)
 #endif /* LWIP_TCP */
     default:
       LWIP_ERROR("Invalid netconn type", 0, do{ err = ERR_VAL; }while(0));
+      err = ERR_VAL;
       break;
     }
   }

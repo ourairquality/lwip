@@ -133,8 +133,13 @@ typedef enum {
 #define PBUF_TYPE_ALLOC_SRC_MASK_STD_HEAP           0x00
 #define PBUF_TYPE_ALLOC_SRC_MASK_STD_MEMP_PBUF      0x01
 #define PBUF_TYPE_ALLOC_SRC_MASK_STD_MEMP_PBUF_POOL 0x02
+#ifdef ESP_OPEN_RTOS
+#define PBUF_TYPE_ALLOC_SRC_MASK_ESP_RX             0x03
+#define PBUF_TYPE_ALLOC_SRC_MASK_APP_MIN            0x04
+#else
 /** First pbuf allocation type for applications */
 #define PBUF_TYPE_ALLOC_SRC_MASK_APP_MIN            0x03
+#endif
 /** Last pbuf allocation type for applications */
 #define PBUF_TYPE_ALLOC_SRC_MASK_APP_MAX            PBUF_TYPE_ALLOC_SRC_MASK
 
@@ -219,6 +224,14 @@ struct pbuf {
 
   /** For incoming packets, this contains the input netif's index */
   u8_t if_idx;
+
+#ifdef ESP_OPEN_RTOS
+  /**
+   * The ESP SDK stores a pointer to a esf_buf here. The only use in lwip
+   * is in pbuf_free which calls sdk_system_pp_recycle_rx_pkt(p->esf_buf).
+   */
+  void *esf_buf;
+#endif
 };
 
 

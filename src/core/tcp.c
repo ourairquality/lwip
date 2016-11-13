@@ -60,6 +60,10 @@
 #include "lwip/ip6_addr.h"
 #include "lwip/nd6.h"
 
+#ifdef ESP_OPEN_RTOS
+#include "FreeRTOS.h"
+#endif
+
 #include <string.h>
 
 #ifdef LWIP_HOOK_FILENAME
@@ -1610,6 +1614,17 @@ struct tcp_pcb *
 tcp_alloc(u8_t prio)
 {
   struct tcp_pcb *pcb;
+
+#ifdef ESP_OPEN_RTOS
+  u32_t free;
+  int i;
+  for (i = 0; i < 3; i++) {
+    free = xPortGetFreeHeapSize();
+    if (free < ESP_TIMEWAIT_THRESHOLD) {
+      tcp_kill_timewait();
+    }
+  }
+#endif
 
   pcb = (struct tcp_pcb *)memp_malloc(MEMP_TCP_PCB);
   if (pcb == NULL) {

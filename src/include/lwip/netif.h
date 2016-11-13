@@ -243,6 +243,14 @@ struct netif {
   struct netif *next;
 #endif
 
+  /** These fields have been moved forward so they do not move around,
+   *  to avoid patching the esp sdk binary libaries. */
+  /** This field can be set by the device driver and could point
+   *  to state information for the device. */
+  void *state;
+  /** link level hardware address of this interface */
+  u8_t hwaddr[NETIF_MAX_HWADDR_LEN];
+
 #if LWIP_IPV4
   /** IP address configuration in network byte order */
   ip_addr_t ip_addr;
@@ -298,9 +306,6 @@ struct netif {
   /** This function is called when the netif has been removed */
   netif_status_callback_fn remove_callback;
 #endif /* LWIP_NETIF_REMOVE_CALLBACK */
-  /** This field can be set by the device driver and could point
-   *  to state information for the device. */
-  void *state;
 #ifdef netif_get_client_data
   void* client_data[LWIP_NETIF_CLIENT_DATA_INDEX_MAX + LWIP_NUM_NETIF_CLIENT_DATA];
 #endif
@@ -313,8 +318,6 @@ struct netif {
 #endif /* LWIP_CHECKSUM_CTRL_PER_NETIF*/
   /** maximum transfer unit (in bytes) */
   u16_t mtu;
-  /** link level hardware address of this interface */
-  u8_t hwaddr[NETIF_MAX_HWADDR_LEN];
   /** number of bytes used in hwaddr */
   u8_t hwaddr_len;
   /** flags (@see @ref netif_flags) */

@@ -1137,6 +1137,10 @@ dhcp_bind(struct netif *netif)
 
   netif_set_addr(netif, &dhcp->offered_ip_addr, &sn_mask, &gw_addr);
   /* interface is used by routing now that an address is set */
+
+#ifdef ESP_OPEN_RTOS
+  sdk_system_station_got_ip_set(&dhcp->offered_ip_addr, &sn_mask, &gw_addr);
+#endif
 }
 
 /**

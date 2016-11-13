@@ -183,6 +183,9 @@ pbuf_init_alloced_pbuf(struct pbuf *p, void* payload, u16_t tot_len, u16_t len, 
   p->flags = flags;
   p->ref = 1;
   p->if_idx = NETIF_NO_INDEX;
+#ifdef ESP_OPEN_RTOS
+  p->esf_buf = NULL;
+#endif
 }
 
 /**
@@ -326,7 +329,11 @@ struct pbuf *
 pbuf_alloc_reference(void *payload, u16_t length, pbuf_type type)
 {
   struct pbuf *p;
-  LWIP_ASSERT("invalid pbuf_type", (type == PBUF_REF) || (type == PBUF_ROM));
+  LWIP_ASSERT("invalid pbuf_type", (type == PBUF_REF) || (type == PBUF_ROM)
+#ifdef ESP_OPEN_RTOS
+              || (type == (PBUF_ALLOC_FLAG_RX | PBUF_TYPE_ALLOC_SRC_MASK_ESP_RX))
+#endif
+              );
   /* only allocate memory for the pbuf structure */
   p = (struct pbuf *)memp_malloc(MEMP_PBUF);
   if (p == NULL) {
@@ -777,6 +784,11 @@ pbuf_free(struct pbuf *p)
         /* type == PBUF_RAM */
         } else if (alloc_src == PBUF_TYPE_ALLOC_SRC_MASK_STD_HEAP) {
           mem_free(p);
+#ifdef ESP_OPEN_RTOS
+        } else if (alloc_src == PBUF_TYPE_ALLOC_SRC_MASK_ESP_RX) {
+          sdk_system_pp_recycle_rx_pkt(p->esf_buf);
+          memp_free(MEMP_PBUF, p);
+#endif
         } else {
           /* @todo: support freeing other types */
           LWIP_ASSERT("invalid pbuf type", 0);
