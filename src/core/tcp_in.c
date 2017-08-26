@@ -1083,10 +1083,8 @@ tcp_receive(struct tcp_pcb *pcb)
 #if TCP_QUEUE_OOSEQ
   struct tcp_seg *prev, *cseg;
 #endif /* TCP_QUEUE_OOSEQ */
-  s32_t off;
   s16_t m;
   u32_t right_wnd_edge;
-  u16_t new_tot_len;
   int found_dupack = 0;
 #if TCP_OOSEQ_MAX_BYTES || TCP_OOSEQ_MAX_PBUFS
   u32_t ooseq_blen;
@@ -1110,17 +1108,6 @@ tcp_receive(struct tcp_pcb *pcb)
       }
       pcb->snd_wl1 = seqno;
       pcb->snd_wl2 = ackno;
-      if (pcb->snd_wnd == 0) {
-        if (pcb->persist_backoff == 0) {
-          /* start persist timer */
-          pcb->persist_cnt = 0;
-          pcb->persist_backoff = 1;
-          pcb->persist_probe = 0;
-        }
-      } else if (pcb->persist_backoff > 0) {
-        /* stop persist timer */
-        pcb->persist_backoff = 0;
-      }
       LWIP_DEBUGF(TCP_WND_DEBUG, ("tcp_receive: window update %"TCPWNDSIZE_F"\n", pcb->snd_wnd));
 #if TCP_WND_DEBUG
     } else {
@@ -1170,7 +1157,8 @@ tcp_receive(struct tcp_pcb *pcb)
               if (pcb->dupacks > 3) {
                 /* Inflate the congestion window */
                 TCP_WND_INC(pcb->cwnd, pcb->mss);
-              } else if (pcb->dupacks >= 3) {
+              }
+              if (pcb->dupacks >= 3) {
                 /* Do fast retransmit (checked via TF_INFR, not via dupacks count) */
                 tcp_rexmit_fast(pcb);
               }
@@ -1381,32 +1369,23 @@ tcp_receive(struct tcp_pcb *pcb)
          length.*/
 
       struct pbuf *p = inseg.p;
-      off = pcb->rcv_nxt - seqno;
+      u32_t off32 = pcb->rcv_nxt - seqno;
+      u16_t new_tot_len, off;
       LWIP_ASSERT("inseg.p != NULL", inseg.p);
-      LWIP_ASSERT("insane offset!", (off < 0x7fff));
-      if (inseg.p->len < off) {
-        LWIP_ASSERT("pbuf too short!", (((s32_t)inseg.p->tot_len) >= off));
-        new_tot_len = (u16_t)(inseg.p->tot_len - off);
-        while (p->len < off) {
-          off -= p->len;
-          /* KJM following line changed (with addition of new_tot_len var)
-             to fix bug #9076
-             inseg.p->tot_len -= p->len; */
-          p->tot_len = new_tot_len;
-          p->len = 0;
-          p = p->next;
-        }
-        if (pbuf_header(p, (s16_t)-off)) {
-          /* Do we need to cope with this failing?  Assert for now */
-          LWIP_ASSERT("pbuf_header failed", 0);
-        }
-      } else {
-        if (pbuf_header(inseg.p, (s16_t)-off)) {
-          /* Do we need to cope with this failing?  Assert for now */
-          LWIP_ASSERT("pbuf_header failed", 0);
-        }
+      LWIP_ASSERT("insane offset!", (off32 < 0xffff));
+      off = (u16_t)off32;
+      LWIP_ASSERT("pbuf too short!", (((s32_t)inseg.p->tot_len) >= off));
+      inseg.len -= off;
+      new_tot_len = (u16_t)(inseg.p->tot_len - off);
+      while (p->len < off) {
+        off -= p->len;
+        /* all pbufs up to and including this one have len==0, so tot_len is equal */
+        p->tot_len = new_tot_len;
+        p->len = 0;
+        p = p->next;
       }
-      inseg.len -= (u16_t)(pcb->rcv_nxt - seqno);
+      /* cannot fail... */
+      pbuf_remove_header(p, off);
       inseg.tcphdr->seqno = seqno = pcb->rcv_nxt;
     }
     else {

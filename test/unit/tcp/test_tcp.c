@@ -139,6 +139,60 @@ START_TEST(test_tcp_recv_inseq)
 }
 END_TEST
 
+/** Create an ESTABLISHED pcb and check if receive callback is called if a segment
+ * overlapping rcv_nxt is received */
+START_TEST(test_tcp_recv_inseq_trim)
+{
+  struct test_tcp_counters counters;
+  struct tcp_pcb* pcb;
+  struct pbuf* p;
+  char data[PBUF_POOL_BUFSIZE*2];
+  u16_t data_len;
+  struct netif netif;
+  struct test_tcp_txcounters txcounters;
+  const u32_t new_data_len = 40;
+  LWIP_UNUSED_ARG(_i);
+
+  /* initialize local vars */
+  test_tcp_init_netif(&netif, &txcounters, &test_local_ip, &test_netmask);
+  data_len = sizeof(data);
+  memset(data, 0, sizeof(data));
+  /* initialize counter struct */
+  memset(&counters, 0, sizeof(counters));
+  counters.expected_data_len = data_len;
+  counters.expected_data = data;
+
+  /* create and initialize the pcb */
+  pcb = test_tcp_new_counters_pcb(&counters);
+  EXPECT_RET(pcb != NULL);
+  tcp_set_state(pcb, ESTABLISHED, &test_local_ip, &test_remote_ip, TEST_LOCAL_PORT, TEST_REMOTE_PORT);
+
+  /* create a segment (with an overlapping/old seqno so that the new data begins in the 2nd pbuf) */
+  p = tcp_create_rx_segment(pcb, counters.expected_data, data_len, (u32_t)(0-(data_len-new_data_len)), 0, 0);
+  EXPECT(p != NULL);
+  if (p != NULL) {
+    EXPECT(p->next != NULL);
+    if (p->next != NULL) {
+      EXPECT(p->next->next != NULL);
+    }
+  }
+  if ((p != NULL) && (p->next != NULL) && (p->next->next != NULL)) {
+    /* pass the segment to tcp_input */
+    test_tcp_input(p, &netif);
+    /* check if counters are as expected */
+    EXPECT(counters.close_calls == 0);
+    EXPECT(counters.recv_calls == 1);
+    EXPECT(counters.recved_bytes == new_data_len);
+    EXPECT(counters.err_calls == 0);
+  }
+
+  /* make sure the pcb is freed */
+  EXPECT(MEMP_STATS_GET(used, MEMP_TCP_PCB) == 1);
+  tcp_abort(pcb);
+  EXPECT(MEMP_STATS_GET(used, MEMP_TCP_PCB) == 0);
+}
+END_TEST
+
 /** Check that we handle malformed tcp headers, and discard the pbuf(s) */
 START_TEST(test_tcp_malformed_header)
 {
@@ -633,7 +687,9 @@ static void test_tcp_tx_full_window_lost(u8_t zero_window_probe_from_unsent)
     /* ensure this didn't trigger any transmission */
     EXPECT(txcounters.num_tx_calls == 0);
     EXPECT(txcounters.num_tx_bytes == 0);
-    EXPECT(pcb->persist_backoff == 1);
+    /* window is completely full, but persist timer is off since send buffer is empty */
+    EXPECT(pcb->snd_wnd == 0);
+    EXPECT(pcb->persist_backoff == 0);
   }
 
   /* send one byte more (out of window) -> persist timer starts */
@@ -937,7 +993,8 @@ START_TEST(test_tcp_zwp_timeout)
   test_tcp_input(p, &netif);
   EXPECT(pcb->unacked == NULL);
   EXPECT(pcb->unsent == NULL);
-  EXPECT(pcb->persist_backoff == 1);
+  /* send buffer empty, persist should be off */
+  EXPECT(pcb->persist_backoff == 0);
   EXPECT(pcb->snd_wnd == 0);
 
   /* send second segment, should be buffered */
@@ -946,11 +1003,12 @@ START_TEST(test_tcp_zwp_timeout)
   err = tcp_output(pcb);
   EXPECT(err == ERR_OK);
 
-  /* ensure it is buffered */
+  /* ensure it is buffered and persist timer started */
   EXPECT(pcb->unacked == NULL);
   check_seqnos(pcb->unsent, 1, &seqnos[1]);
   EXPECT(txcounters.num_tx_calls == 0);
   EXPECT(txcounters.num_tx_bytes == 0);
+  EXPECT(pcb->persist_backoff == 1);
 
   /* ensure no errors have been recorded */
   EXPECT(counters.err_calls == 0);
@@ -997,6 +1055,152 @@ START_TEST(test_tcp_zwp_timeout)
 }
 END_TEST
 
+START_TEST(test_tcp_persist_split)
+{
+  struct netif netif;
+  struct test_tcp_txcounters txcounters;
+  struct test_tcp_counters counters;
+  struct tcp_pcb *pcb;
+  struct pbuf* p;
+  err_t err;
+  u16_t i;
+  LWIP_UNUSED_ARG(_i);
+
+  /* Setup data for four segments */
+  for (i = 0; i < 4 * TCP_MSS; i++) {
+    tx_data[i] = (u8_t)i;
+  }
+
+  /* initialize local vars */
+  test_tcp_init_netif(&netif, &txcounters, &test_local_ip, &test_netmask);
+  memset(&counters, 0, sizeof(counters));
+
+  /* create and initialize the pcb */
+  tcp_ticks = SEQNO1 - ISS;
+  pcb = test_tcp_new_counters_pcb(&counters);
+  EXPECT_RET(pcb != NULL);
+  tcp_set_state(pcb, ESTABLISHED, &test_local_ip, &test_remote_ip, TEST_LOCAL_PORT, TEST_REMOTE_PORT);
+  pcb->mss = TCP_MSS;
+  /* set window to three segments */
+  pcb->cwnd = 3 * TCP_MSS;
+  pcb->snd_wnd = 3 * TCP_MSS;
+  pcb->snd_wnd_max = 3 * TCP_MSS;
+
+  /* send three segments */
+  err = tcp_write(pcb, &tx_data[0], 3 * TCP_MSS, TCP_WRITE_FLAG_COPY);
+  EXPECT(err == ERR_OK);
+  err = tcp_output(pcb);
+  EXPECT(err == ERR_OK);
+
+  /* verify segments are in-flight */
+  EXPECT(pcb->unsent == NULL);
+  EXPECT(pcb->unacked != NULL);
+  check_seqnos(pcb->unacked, 3, seqnos);
+  EXPECT(txcounters.num_tx_calls == 3);
+  EXPECT(txcounters.num_tx_bytes == 3 * (TCP_MSS + 40U));
+  memset(&txcounters, 0, sizeof(txcounters));
+
+  /* ACK the segments and update the window to only 1/2 TCP_MSS */
+  p = tcp_create_rx_segment_wnd(pcb, NULL, 0, 0, 3 * TCP_MSS, TCP_ACK, TCP_MSS / 2);
+  test_tcp_input(p, &netif);
+  EXPECT(pcb->unacked == NULL);
+  EXPECT(pcb->unsent == NULL);
+  EXPECT(pcb->persist_backoff == 0);
+  EXPECT(pcb->snd_wnd == TCP_MSS / 2);
+
+  /* send fourth segment, which is larger than snd_wnd */
+  err = tcp_write(pcb, &tx_data[3 * TCP_MSS], TCP_MSS, TCP_WRITE_FLAG_COPY);
+  EXPECT(err == ERR_OK);
+  err = tcp_output(pcb);
+  EXPECT(err == ERR_OK);
+
+  /* ensure it is buffered and persist timer started */
+  EXPECT(pcb->unacked == NULL);
+  EXPECT(pcb->unsent != NULL);
+  check_seqnos(pcb->unsent, 1, &seqnos[3]);
+  EXPECT(txcounters.num_tx_calls == 0);
+  EXPECT(txcounters.num_tx_bytes == 0);
+  EXPECT(pcb->persist_backoff == 1);
+
+  /* ensure no errors have been recorded */
+  EXPECT(counters.err_calls == 0);
+  EXPECT(counters.last_err == ERR_OK);
+
+  /* call tcp_timer some more times to let persist timer count up */
+    for (i = 0; i < 4; i++) {
+      test_tcp_tmr();
+      EXPECT(txcounters.num_tx_calls == 0);
+      EXPECT(txcounters.num_tx_bytes == 0);
+    }
+
+  /* this should be the first timer shot, which should split the
+   * segment and send a runt (of the remaining window size) */
+  txcounters.copy_tx_packets = 1;
+  test_tcp_tmr();
+  txcounters.copy_tx_packets = 0;
+  /* persist will be disabled as RTO timer takes over */
+  EXPECT(pcb->persist_backoff == 0);
+  EXPECT(txcounters.num_tx_calls == 1);
+  EXPECT(txcounters.num_tx_bytes == ((TCP_MSS /2) + 40U));
+  /* verify half segment sent, half still buffered */
+  EXPECT(pcb->unsent != NULL);
+  EXPECT(pcb->unsent->len == TCP_MSS / 2);
+  EXPECT(pcb->unacked != NULL);
+  EXPECT(pcb->unacked->len == TCP_MSS / 2);
+
+  /* verify first half segment */
+  EXPECT(txcounters.tx_packets != NULL);
+  if (txcounters.tx_packets != NULL) {
+    u8_t sent[TCP_MSS / 2];
+    u16_t ret;
+    ret = pbuf_copy_partial(txcounters.tx_packets, &sent, TCP_MSS / 2, 40U);
+    EXPECT(ret == TCP_MSS / 2);
+    EXPECT(memcmp(sent, &tx_data[3 * TCP_MSS], TCP_MSS / 2) == 0);
+  }
+  if (txcounters.tx_packets != NULL) {
+    pbuf_free(txcounters.tx_packets);
+    txcounters.tx_packets = NULL;
+  }
+  memset(&txcounters, 0, sizeof(txcounters));
+
+  /* ACK the half segment, leave window at half segment */
+  p = tcp_create_rx_segment_wnd(pcb, NULL, 0, 0, TCP_MSS / 2, TCP_ACK, TCP_MSS / 2);
+  txcounters.copy_tx_packets = 1;
+  test_tcp_input(p, &netif);
+  txcounters.copy_tx_packets = 0;
+  /* ensure remaining half segment was sent */
+  EXPECT(txcounters.num_tx_calls == 1);
+  EXPECT(txcounters.num_tx_bytes == ((TCP_MSS /2 ) + 40U));
+  EXPECT(pcb->unsent == NULL);
+  EXPECT(pcb->unacked != NULL);
+  EXPECT(pcb->unacked->len == TCP_MSS / 2);
+  EXPECT(pcb->snd_wnd == TCP_MSS / 2);
+
+  /* verify second half segment */
+  EXPECT(txcounters.tx_packets != NULL);
+  if (txcounters.tx_packets != NULL) {
+    u8_t sent[TCP_MSS / 2];
+    u16_t ret;
+    ret = pbuf_copy_partial(txcounters.tx_packets, &sent, TCP_MSS / 2, 40U);
+    EXPECT(ret == TCP_MSS / 2);
+    EXPECT(memcmp(sent, &tx_data[(3 * TCP_MSS) + TCP_MSS / 2], TCP_MSS / 2) == 0);
+  }
+  if (txcounters.tx_packets != NULL) {
+    pbuf_free(txcounters.tx_packets);
+    txcounters.tx_packets = NULL;
+  }
+
+  /* ensure no errors have been recorded */
+  EXPECT(counters.err_calls == 0);
+  EXPECT(counters.last_err == ERR_OK);
+
+  /* make sure the pcb is freed */
+  EXPECT_RET(MEMP_STATS_GET(used, MEMP_TCP_PCB) == 1);
+  tcp_abort(pcb);
+  EXPECT_RET(MEMP_STATS_GET(used, MEMP_TCP_PCB) == 0);
+}
+END_TEST
+
 /** Create the suite including all tests for this module */
 Suite *
 tcp_suite(void)
@@ -1004,6 +1208,7 @@ tcp_suite(void)
   testfunc tests[] = {
     TESTFUNC(test_tcp_new_abort),
     TESTFUNC(test_tcp_recv_inseq),
+    TESTFUNC(test_tcp_recv_inseq_trim),
     TESTFUNC(test_tcp_malformed_header),
     TESTFUNC(test_tcp_fast_retx_recover),
     TESTFUNC(test_tcp_fast_rexmit_wraparound),
@@ -1012,7 +1217,8 @@ tcp_suite(void)
     TESTFUNC(test_tcp_tx_full_window_lost_from_unsent),
     TESTFUNC(test_tcp_rto_tracking),
     TESTFUNC(test_tcp_rto_timeout),
-    TESTFUNC(test_tcp_zwp_timeout)
+    TESTFUNC(test_tcp_zwp_timeout),
+    TESTFUNC(test_tcp_persist_split)
   };
   return create_suite("TCP", tests, sizeof(tests)/sizeof(testfunc), tcp_setup, tcp_teardown);
 }
