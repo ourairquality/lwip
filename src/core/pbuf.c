@@ -780,7 +780,7 @@ pbuf_free(struct pbuf *p)
           mem_free(p);
 #ifdef ESP_OPEN_RTOS
         } else if (alloc_src == PBUF_TYPE_ALLOC_SRC_MASK_ESP_RX) {
-          sdk_system_pp_recycle_rx_pkt(p->esf_buf);
+          pp_recycle_rx_pbuf(p);
           memp_free(MEMP_PBUF, p);
 #endif
         } else {
