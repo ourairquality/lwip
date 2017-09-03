@@ -1291,19 +1291,21 @@
 #endif
 
 /**
- * TCP_OOSEQ_MAX_BYTES: The maximum number of bytes queued on ooseq per pcb.
- * Default is 0 (no limit). Only valid for TCP_QUEUE_OOSEQ==1.
+ * TCP_OOSEQ_MAX_BYTES(n):
+ * Return the maximum number of bytes to be queued on ooseq per pcb, given the
+ * current number queued on a pcb.  Only valid for TCP_QUEUE_OOSEQ==1.
  */
-#if !defined TCP_OOSEQ_MAX_BYTES || defined __DOXYGEN__
-#define TCP_OOSEQ_MAX_BYTES             0
+#ifdef __DOXYGEN__
+#define TCP_OOSEQ_MAX_BYTES(n)
 #endif
 
 /**
- * TCP_OOSEQ_MAX_PBUFS: The maximum number of pbufs queued on ooseq per pcb.
- * Default is 0 (no limit). Only valid for TCP_QUEUE_OOSEQ==1.
+ * TCP_OOSEQ_MAX_PBUFS(n):
+ * Return the maximum number of pbufs to be queued on ooseq per pcb, given the
+ * current number queued on a pcb.  Only valid for TCP_QUEUE_OOSEQ==1.
  */
-#if !defined TCP_OOSEQ_MAX_PBUFS || defined __DOXYGEN__
-#define TCP_OOSEQ_MAX_PBUFS             0
+#ifdef __DOXYGEN__
+#define TCP_OOSEQ_MAX_PBUFS(n)
 #endif
 
 /**
