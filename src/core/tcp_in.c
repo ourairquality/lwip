@@ -94,9 +94,9 @@ static void tcp_timewait_input(struct tcp_pcb *pcb);
 #if LWIP_TCP_SACK_OUT
 static void tcp_add_sack(struct tcp_pcb *pcb, u32_t left, u32_t right);
 static void tcp_remove_sacks_lt(struct tcp_pcb *pcb, u32_t seq);
-#if defined(TCP_OOSEQ_MAX_BYTES) || defined(TCP_OOSEQ_MAX_PBUFS)
+#if defined(TCP_OOSEQ_BYTES_LIMIT) && defined(TCP_OOSEQ_PBUFS_LIMIT)
 static void tcp_remove_sacks_gt(struct tcp_pcb *pcb, u32_t seq);
-#endif /* TCP_OOSEQ_MAX_BYTES || TCP_OOSEQ_MAX_PBUFS */
+#endif /* TCP_OOSEQ_BYTES_LIMIT || TCP_OOSEQ_PBUFS_LIMIT */
 #endif /* LWIP_TCP_SACK_OUT */
 
 /**
@@ -1082,10 +1082,10 @@ tcp_receive(struct tcp_pcb *pcb)
 #if TCP_QUEUE_OOSEQ
   struct tcp_seg *next;
   struct tcp_seg *prev, *cseg;
-#if defined(TCP_OOSEQ_MAX_BYTES) || defined(TCP_OOSEQ_MAX_PBUFS)
+#if defined(TCP_OOSEQ_BYTES_LIMIT) && defined(TCP_OOSEQ_PBUFS_LIMIT)
   u32_t ooseq_blen, ooseq_max_blen;
   u16_t ooseq_qlen, ooseq_max_qlen;
-#endif /* TCP_OOSEQ_MAX_BYTES || TCP_OOSEQ_MAX_PBUFS */
+#endif /* TCP_OOSEQ_BYTES_LIMIT && TCP_OOSEQ_PBUFS_LIMIT */
 #endif /* TCP_QUEUE_OOSEQ */
   s16_t m;
   u32_t right_wnd_edge;
@@ -1763,23 +1763,14 @@ tcp_receive(struct tcp_pcb *pcb)
           }
 #endif /* LWIP_TCP_SACK_OUT */
         }
-#if defined(TCP_OOSEQ_MAX_BYTES) || defined(TCP_OOSEQ_MAX_PBUFS)
+#if defined(TCP_OOSEQ_BYTES_LIMIT) && defined(TCP_OOSEQ_PBUFS_LIMIT)
         /* Check that the data on ooseq doesn't exceed one of the limits
            and throw away everything above that limit. */
-
+        ooseq_max_blen = TCP_OOSEQ_BYTES_LIMIT(pcb->ooseq);
+        ooseq_max_qlen = TCP_OOSEQ_PBUFS_LIMIT(pcb->ooseq);
         ooseq_blen = 0;
         ooseq_qlen = 0;
-        for (next = pcb->ooseq; next != NULL; next = next->next) {
-          struct pbuf *p = next->p;
-          ooseq_blen += p->tot_len;
-          ooseq_qlen += pbuf_clen(p);
-        }
-        ooseq_max_blen = TCP_OOSEQ_MAX_BYTES(ooseq_blen);
-        ooseq_max_qlen = TCP_OOSEQ_MAX_PBUFS(ooseq_qlen);
-
         prev = NULL;
-        ooseq_blen = 0;
-        ooseq_qlen = 0;
         for (next = pcb->ooseq; next != NULL; prev = next, next = next->next) {
           struct pbuf *p = next->p;
           ooseq_blen += p->tot_len;
@@ -1804,7 +1795,7 @@ tcp_receive(struct tcp_pcb *pcb)
              break;
           }
         }
-#endif /* TCP_OOSEQ_MAX_BYTES || TCP_OOSEQ_MAX_PBUFS */
+#endif /* TCP_OOSEQ_BYTES_LIMIT && TCP_OOSEQ_PBUFS_LIMIT */
 #endif /* TCP_QUEUE_OOSEQ */
 
         /* We send the ACK packet after we've (potentially) dealt with SACKs,
@@ -2070,7 +2061,7 @@ tcp_remove_sacks_lt(struct tcp_pcb *pcb, u32_t seq)
   }
 }
 
-#if defined(TCP_OOSEQ_MAX_BYTES) || defined(TCP_OOSEQ_MAX_PBUFS)
+#if defined(TCP_OOSEQ_BYTES_LIMIT) && defined(TCP_OOSEQ_PBUFS_LIMIT)
 /**
  * Called to remove a range of SACKs.
  *
@@ -2109,7 +2100,7 @@ tcp_remove_sacks_gt(struct tcp_pcb *pcb, u32_t seq)
     pcb->rcv_sacks[i].left = pcb->rcv_sacks[i].right = 0;
   }
 }
-#endif /* TCP_OOSEQ_MAX_BYTES || TCP_OOSEQ_MAX_PBUFS */
+#endif /* TCP_OOSEQ_BYTES_LIMIT && TCP_OOSEQ_PBUFS_LIMIT */
 
 #endif /* LWIP_TCP_SACK_OUT */
 
