@@ -735,7 +735,7 @@
  * in this time, the whole packet is discarded.
  */
 #if !defined IP_REASS_MAXAGE || defined __DOXYGEN__
-#define IP_REASS_MAXAGE                 3
+#define IP_REASS_MAXAGE                 15
 #endif
 
 /**
@@ -1309,14 +1309,16 @@
 #endif
 
 /**
- * TCP_OOSEQ_BYTES_LIMIT(ooseq): Return the maximum number of bytes to be queued
- * on ooseq per pcb, given the pcb.  Only valid for TCP_QUEUE_OOSEQ==1.
+ * TCP_OOSEQ_BYTES_LIMIT(pcb): Return the maximum number of bytes to be queued
+ * on ooseq per pcb, given the pcb. Only valid for TCP_QUEUE_OOSEQ==1 &&
+ * TCP_OOSEQ_MAX_BYTES==1.
+ * Use this to override TCP_OOSEQ_MAX_BYTES to a dynamic value per pcb.
  */
 #if !defined TCP_OOSEQ_BYTES_LIMIT
 #if TCP_OOSEQ_MAX_BYTES
-#define TCP_OOSEQ_BYTES_LIMIT(ooseq) TCP_OOSEQ_MAX_BYTES
+#define TCP_OOSEQ_BYTES_LIMIT(pcb) TCP_OOSEQ_MAX_BYTES
 #elif defined __DOXYGEN__
-#define TCP_OOSEQ_BYTES_LIMIT(ooseq)
+#define TCP_OOSEQ_BYTES_LIMIT(pcb)
 #endif
 #endif
 
@@ -1330,14 +1332,16 @@
 #endif
 
 /**
- * TCP_OOSEQ_PBUFS_LIMIT(ooseq): Return the maximum number of pbufs to be queued
- * on ooseq per pcb, given the pcb.  Only valid for TCP_QUEUE_OOSEQ==1.
+ * TCP_OOSEQ_PBUFS_LIMIT(pcb): Return the maximum number of pbufs to be queued
+ * on ooseq per pcb, given the pcb.  Only valid for TCP_QUEUE_OOSEQ==1 &&
+ * TCP_OOSEQ_MAX_PBUFS==1.
+ * Use this to override TCP_OOSEQ_MAX_PBUFS to a dynamic value per pcb.
  */
 #if !defined TCP_OOSEQ_PBUFS_LIMIT
 #if TCP_OOSEQ_MAX_PBUFS
-#define TCP_OOSEQ_PBUFS_LIMIT(ooseq) TCP_OOSEQ_MAX_PBUFS
+#define TCP_OOSEQ_PBUFS_LIMIT(pcb) TCP_OOSEQ_MAX_PBUFS
 #elif defined __DOXYGEN__
-#define TCP_OOSEQ_PBUFS_LIMIT(ooseq)
+#define TCP_OOSEQ_PBUFS_LIMIT(pcb)
 #endif
 #endif
 
@@ -2305,6 +2309,15 @@
  */
 #if !defined LWIP_IPV6 || defined __DOXYGEN__
 #define LWIP_IPV6                       0
+#endif
+
+/**
+ * IPV6_REASS_MAXAGE: Maximum time (in multiples of IP6_REASS_TMR_INTERVAL - so seconds, normally)
+ * a fragmented IP packet waits for all fragments to arrive. If not all fragments arrived
+ * in this time, the whole packet is discarded.
+ */
+#if !defined IPV6_REASS_MAXAGE || defined __DOXYGEN__
+#define IPV6_REASS_MAXAGE               60
 #endif
 
 /**
