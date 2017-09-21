@@ -1327,7 +1327,7 @@
  * pcb if TCP_OOSEQ_BYTES_LIMIT is not defined. Default is 0 (no limit).
  * Only valid for TCP_QUEUE_OOSEQ==1.
  */
-#if !defined TCP_OOSEQ_MAX_BYTES || defined __DOXYGEN__
+#if !defined TCP_OOSEQ_MAX_PBUFS || defined __DOXYGEN__
 #define TCP_OOSEQ_MAX_PBUFS             0
 #endif
 
