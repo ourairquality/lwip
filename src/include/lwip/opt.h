@@ -296,6 +296,14 @@
 #endif
 
 /**
+ * MEM_SANITY_CHECK==1: run a sanity check after each mem_free() to make
+ * sure that the linked list of heap elements is not corrupted.
+ */
+#if !defined MEM_SANITY_CHECK || defined __DOXYGEN__
+#define MEM_SANITY_CHECK                0
+#endif
+
+/**
  * MEM_USE_POOLS==1: Use an alternative to malloc() by allocating from a set
  * of memory pools of various sizes. When mem_malloc is called, an element of
  * the smallest pool that can provide the length needed is returned.
@@ -2015,6 +2023,14 @@
  */
 #if !defined LWIP_SOCKET_SELECT || defined __DOXYGEN__
 #define LWIP_SOCKET_SELECT              1
+#endif
+
+/**
+ * LWIP_SOCKET_POLL==1 (default): enable poll() for sockets (including
+ * struct pollfd, nfds_t, and constants)
+ */
+#if !defined LWIP_SOCKET_POLL || defined __DOXYGEN__
+#define LWIP_SOCKET_POLL                1
 #endif
 /**
  * @}
