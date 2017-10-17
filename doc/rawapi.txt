@@ -92,7 +92,7 @@ program using the raw TCP/IP interface.
 
 Do not confuse the lwIP raw API with raw Ethernet or IP sockets.
 The former is a way of interfacing the lwIP network stack (including
-TCP and UDP), the later refers to processing raw Ethernet or IP data
+TCP and UDP), the latter refers to processing raw Ethernet or IP data
 instead of TCP connections or UDP packets.
 
 Raw API applications may never block since all packet processing
@@ -256,10 +256,9 @@ window.
 
   Sets the callback function that will be called when new data
   arrives. The callback function will be passed a NULL pbuf to
-  indicate that the remote host has closed the connection. If
-  there are no errors and the callback function is to return
-  ERR_OK, then it must free the pbuf. Otherwise, it must not
-  free the pbuf so that lwIP core code can store it.
+  indicate that the remote host has closed the connection. If the
+  callback function returns ERR_OK or ERR_ABRT it must have
+  freed the pbuf, otherwise it must not have freed it.
 
 - void tcp_recved(struct tcp_pcb *pcb, u16_t len)
 
