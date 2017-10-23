@@ -1,13 +1,6 @@
 /**
  * @file
  * Sockets BSD-Like API module
- *
- * @defgroup socket Socket API
- * @ingroup sequential_api
- * BSD-style socket API.\n
- * Thread-safe, to be called from non-TCPIP threads only.\n
- * Can be activated by defining @ref LWIP_SOCKET to 1.\n
- * Header is in posix/sys/socket.h\b
  */
 
 /*
@@ -257,7 +250,7 @@ struct lwip_socket_multicast_mld6_pair socket_ipv6_multicast_memberships[LWIP_SO
 static int  lwip_socket_register_mld6_membership(int s, unsigned int if_idx, const ip6_addr_t *multi_addr);
 static void lwip_socket_unregister_mld6_membership(int s, unsigned int if_idx, const ip6_addr_t *multi_addr);
 static void lwip_socket_drop_registered_mld6_memberships(int s);
-#endif /* LWIP_IGMP */
+#endif /* LWIP_IPV6_MLD */
 
 /** The global array of available sockets */
 static struct lwip_sock sockets[NUM_SOCKETS];
@@ -1212,7 +1205,7 @@ lwip_recvmsg(int s, struct msghdr *message, int flags)
 
   LWIP_DEBUGF(SOCKETS_DEBUG, ("lwip_recvmsg(%d, message=%p, flags=0x%x)\n", s, (void *)message, flags));
   LWIP_ERROR("lwip_recvmsg: invalid message pointer", message != NULL, return ERR_ARG;);
-  LWIP_ERROR("lwip_recvmsg: unsupported flags", ((flags == 0) || (flags == MSG_PEEK)),
+  LWIP_ERROR("lwip_recvmsg: unsupported flags", (flags & ~(MSG_PEEK|MSG_DONTWAIT)) == 0,
              set_errno(EOPNOTSUPP); return -1;);
 
   if ((message->msg_iovlen <= 0) || (message->msg_iovlen > IOV_MAX)) {
@@ -1260,8 +1253,7 @@ lwip_recvmsg(int s, struct msghdr *message, int flags)
         }
         break;
       }
-      /* while MSG_DONTWAIT is not supported for this function, we pass it to
-          lwip_recv_tcp() to prevent waiting for more data */
+      /* pass MSG_DONTWAIT to lwip_recv_tcp() to prevent waiting for more data */
       recv_flags |= MSG_DONTWAIT;
     }
     if (buflen > 0) {
@@ -2230,13 +2222,11 @@ static void
 lwip_poll_dec_sockets_used(struct pollfd *fds, nfds_t nfds)
 {
   nfds_t fdi;
-  struct lwip_sock *sock;
-  SYS_ARCH_DECL_PROTECT(lev);
 
   if(fds) {
     /* Go through each struct pollfd in the array. */
     for (fdi = 0; fdi < nfds; fdi++) {
-      sock = tryget_socket_unconn_nouse(fds[fdi].fd);
+      struct lwip_sock *sock = tryget_socket_unconn_nouse(fds[fdi].fd);
       LWIP_ASSERT("socket gone at the end of select", sock != NULL);
       if (sock != NULL) {
         done_socket(sock);
@@ -2459,6 +2449,8 @@ event_callback(struct netconn *conn, enum netconn_evt evt, u16_t len)
     case NETCONN_EVT_RCVMINUS:
       sock->rcvevent--;
       check_waiters = 0;
+      sock->sendevent = 1;
+      break;
     case NETCONN_EVT_SENDPLUS:
       if (sock->sendevent) {
         check_waiters = 0;
@@ -2468,6 +2460,8 @@ event_callback(struct netconn *conn, enum netconn_evt evt, u16_t len)
     case NETCONN_EVT_SENDMINUS:
       sock->sendevent = 0;
       check_waiters = 0;
+      sock->errevent = 1;
+      break;
     case NETCONN_EVT_ERROR:
       sock->errevent = 1;
       break;

@@ -6,7 +6,7 @@
  * @defgroup tcp_raw TCP
  * @ingroup callbackstyle_api
  * Transmission Control Protocol for IP\n
- * @see @ref raw_api and @ref netconn
+ * @see @ref api
  *
  * Common functions for the TCP implementation, such as functinos
  * for manipulating the data structures and the TCP timer functions. TCP functions
@@ -14,7 +14,6 @@
  * 
  * TCP connection setup
  * --------------------
- * 
  * The functions used for setting up connections is similar to that of
  * the sequential API and of the BSD socket API. A new TCP connection
  * identifier (i.e., a protocol control block - PCB) is created with the
@@ -37,7 +36,6 @@
  * 
  * Receiving TCP data
  * ------------------
- * 
  * TCP data reception is callback based - an application specified
  * callback function is called when new data arrives. When the
  * application has taken the data, it has to call the tcp_recved()
@@ -610,7 +608,7 @@ tcp_abort(struct tcp_pcb *pcb)
 /**
  * @ingroup tcp_raw
  * Binds the connection to a local port number and IP address. If the
- * IP address is not given (i.e., ipaddr == NULL), the connection is
+ * IP address is not given (i.e., ipaddr == IP_ANY_TYPE), the connection is
  * bound to all local IP addresses.
  * If another connection is bound to the same port, the function will
  * return ERR_USE, otherwise ERR_OK is returned.

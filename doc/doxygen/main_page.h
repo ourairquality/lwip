@@ -2,8 +2,44 @@
  * @defgroup lwip lwIP
  *
  * @defgroup infrastructure Infrastructure
+ * 
+ * @defgroup api APIs
+ * lwIP provides three Application Program's Interfaces (APIs) for programs
+ * to use for communication with the TCP/IP code:
+ * - low-level "core" / "callback" or @ref callbackstyle_api.
+ * - higher-level @ref sequential_api.
+ * - BSD-style @ref socket.
+ * 
+ * The raw TCP/IP interface allows the application program to integrate
+ * better with the TCP/IP code. Program execution is event based by
+ * having callback functions being called from within the TCP/IP
+ * code. The TCP/IP code and the application program both run in the same
+ * thread. The sequential API has a much higher overhead and is not very
+ * well suited for small systems since it forces a multithreaded paradigm
+ * on the application.
+ * 
+ * The raw TCP/IP interface is not only faster in terms of code execution
+ * time but is also less memory intensive. The drawback is that program
+ * development is somewhat harder and application programs written for
+ * the raw TCP/IP interface are more difficult to understand. Still, this
+ * is the preferred way of writing applications that should be small in
+ * code size and memory usage.
+ * 
+ * All APIs can be used simultaneously by different application
+ * programs. In fact, the sequential API is implemented as an application
+ * program using the raw TCP/IP interface.
+ * 
+ * Do not confuse the lwIP raw API with raw Ethernet or IP sockets.
+ * The former is a way of interfacing the lwIP network stack (including
+ * TCP and UDP), the latter refers to processing raw Ethernet or IP data
+ * instead of TCP connections or UDP packets.
+ * 
+ * Raw API applications may never block since all packet processing
+ * (input and output) as well as timer processing (TCP mainly) is done
+ * in a single execution context.
  *
- * @defgroup callbackstyle_api Callback-style APIs
+ * @defgroup callbackstyle_api "raw" APIs
+ * @ingroup api
  * Non thread-safe APIs, callback style for maximum performance and minimum
  * memory footprint.
  * Program execution is driven by callbacks functions, which are then
@@ -18,10 +54,35 @@
  * argument. Also, in order to be able to keep program specific state,
  * the callback functions are called with a program specified argument
  * that is independent of the TCP/IP state.
+ * The raw API (sometimes called native API) is an event-driven API designed
+ * to be used without an operating system that implements zero-copy send and
+ * receive. This API is also used by the core stack for interaction between
+ * the various protocols. It is the only API available when running lwIP
+ * without an operating system.
  * 
  * @defgroup sequential_api Sequential-style APIs
+ * @ingroup api
  * Sequential-style APIs, blocking functions. More overhead, but can be called
  * from any thread except TCPIP thread.
+ * The sequential API provides a way for ordinary, sequential, programs
+ * to use the lwIP stack. It is quite similar to the BSD socket API. The
+ * model of execution is based on the blocking open-read-write-close
+ * paradigm. Since the TCP/IP stack is event based by nature, the TCP/IP
+ * code and the application program must reside in different execution
+ * contexts (threads).
+ * 
+ * @defgroup socket Socket API
+ * @ingroup api
+ * BSD-style socket API.\n
+ * Thread-safe, to be called from non-TCPIP threads only.\n
+ * Can be activated by defining @ref LWIP_SOCKET to 1.\n
+ * Header is in posix/sys/socket.h\n
+ * The socket API is a compatibility API for existing applications,
+ * currently it is built on top of the sequential API. It is meant to
+ * provide all functions needed to run socket API applications running
+ * on other platforms (e.g. unix / windows etc.). However, due to limitations
+ * in the specification of this API, there might be incompatibilities
+ * that require small modifications of existing programs.
  * 
  * @defgroup netifs NETIFs
  * 
@@ -145,6 +206,140 @@
  */
 
 /**
- * @page raw_api lwIP API
- * @verbinclude "rawapi.txt"
+ * @page sys_init System initalization
+A truly complete and generic sequence for initializing the lwIP stack
+cannot be given because it depends on additional initializations for
+your runtime environment (e.g. timers).
+
+We can give you some idea on how to proceed when using the raw API.
+We assume a configuration using a single Ethernet netif and the
+UDP and TCP transport layers, IPv4 and the DHCP client.
+
+Call these functions in the order of appearance:
+
+- lwip_init(): Initialize the lwIP stack and all of its subsystems.
+
+- netif_add(struct netif *netif, ...):
+  Adds your network interface to the netif_list. Allocate a struct
+  netif and pass a pointer to this structure as the first argument.
+  Give pointers to cleared ip_addr structures when using DHCP,
+  or fill them with sane numbers otherwise. The state pointer may be NULL.
+
+  The init function pointer must point to a initialization function for
+  your Ethernet netif interface. The following code illustrates its use.
+  
+@code{.c}
+  err_t netif_if_init(struct netif *netif)
+  {
+    u8_t i;
+    
+    for (i = 0; i < ETHARP_HWADDR_LEN; i++) {
+      netif->hwaddr[i] = some_eth_addr[i];
+    }
+    init_my_eth_device();
+    return ERR_OK;
+  }
+@endcode
+  
+  For Ethernet drivers, the input function pointer must point to the lwIP
+  function ethernet_input() declared in "netif/etharp.h". Other drivers
+  must use ip_input() declared in "lwip/ip.h".
+  
+- netif_set_default(struct netif *netif)
+  Registers the default network interface.
+
+- netif_set_link_up(struct netif *netif)
+  This is the hardware link state; e.g. whether cable is plugged for wired
+  Ethernet interface. This function must be called even if you don't know
+  the current state. Having link up and link down events is optional but
+  DHCP and IPv6 discover benefit well from those events.
+
+- netif_set_up(struct netif *netif)
+  This is the administrative (= software) state of the netif, when the
+  netif is fully configured this function must be called.
+
+- dhcp_start(struct netif *netif)
+  Creates a new DHCP client for this interface on the first call.
+  You can peek in the netif->dhcp struct for the actual DHCP status.
+
+- sys_check_timeouts()
+  When the system is running, you have to periodically call
+  sys_check_timeouts() which will handle all timers for all protocols in
+  the stack; add this to your main loop or equivalent.
+ */
+
+/**
+ * @page multithreading Multithreading
+ * lwIP started targeting single-threaded environments. When adding multi-
+ * threading support, instead of making the core thread-safe, another
+ * approach was chosen: there is one main thread running the lwIP core
+ * (also known as the "tcpip_thread"). When running in a multithreaded
+ * environment, raw API functions MUST only be called from the core thread
+ * since raw API functions are not protected from concurrent access (aside
+ * from pbuf- and memory management functions). Application threads using
+ * the sequential- or socket API communicate with this main thread through
+ * message passing.
+ * 
+ * As such, the list of functions that may be called from
+ * other threads or an ISR is very limited! Only functions
+ * from these API header files are thread-safe:
+ * - api.h
+ * - netbuf.h
+ * - netdb.h
+ * - netifapi.h
+ * - pppapi.h
+ * - sockets.h
+ * - sys.h
+ * 
+ * Additionaly, memory (de-)allocation functions may be
+ * called from multiple threads (not ISR!) with NO_SYS=0
+ * since they are protected by SYS_LIGHTWEIGHT_PROT and/or
+ * semaphores.
+ * 
+ * Netconn or Socket API functions are thread safe against the
+ * core thread but they are not reentrant at the control block
+ * granularity level. That is, a UDP or TCP control block must
+ * not be shared among multiple threads without proper locking.
+ * 
+ * If SYS_LIGHTWEIGHT_PROT is set to 1 and
+ * LWIP_ALLOW_MEM_FREE_FROM_OTHER_CONTEXT is set to 1,
+ * pbuf_free() may also be called from another thread or
+ * an ISR (since only then, mem_free - for PBUF_RAM - may
+ * be called from an ISR: otherwise, the HEAP is only
+ * protected by semaphores).
+ */
+
+/**
+ * @page optimization Optimization hints
+The first thing you want to optimize is the lwip_standard_checksum()
+routine from src/core/inet.c. You can override this standard
+function with the \#define LWIP_CHKSUM your_checksum_routine().
+
+There are C examples given in inet.c or you might want to
+craft an assembly function for this. RFC1071 is a good
+introduction to this subject.
+
+Other significant improvements can be made by supplying
+assembly or inline replacements for htons() and htonl()
+if you're using a little-endian architecture.
+\#define lwip_htons(x) your_htons()
+\#define lwip_htonl(x) your_htonl()
+If you \#define them to htons() and htonl(), you should
+\#define LWIP_DONT_PROVIDE_BYTEORDER_FUNCTIONS to prevent lwIP from
+defining htonx / ntohx compatibility macros.
+
+Check your network interface driver if it reads at
+a higher speed than the maximum wire-speed. If the
+hardware isn't serviced frequently and fast enough
+buffer overflows are likely to occur.
+
+E.g. when using the cs8900 driver, call cs8900if_service(ethif)
+as frequently as possible. When using an RTOS let the cs8900 interrupt
+wake a high priority task that services your driver using a binary
+semaphore or event flag. Some drivers might allow additional tuning
+to match your application and network.
+
+For a production release it is recommended to set LWIP_STATS to 0.
+Note that speed performance isn't influenced much by simply setting
+high values to the memory options.
  */
