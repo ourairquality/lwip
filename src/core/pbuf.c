@@ -91,6 +91,9 @@
    aligned there. Therefore, PBUF_POOL_BUFSIZE_ALIGNED can be used here. */
 #define PBUF_POOL_BUFSIZE_ALIGNED LWIP_MEM_ALIGN_SIZE(PBUF_POOL_BUFSIZE)
 
+static const struct pbuf *
+pbuf_skip_const(const struct pbuf *in, u16_t in_offset, u16_t *out_offset);
+
 #if !LWIP_TCP || !TCP_QUEUE_OOSEQ || !PBUF_POOL_FREE_OOSEQ
 #define PBUF_POOL_IS_EMPTY()
 #else /* !LWIP_TCP || !TCP_QUEUE_OOSEQ || !PBUF_POOL_FREE_OOSEQ */
@@ -481,7 +484,10 @@ pbuf_add_header_impl(struct pbuf *p, size_t header_size_increment, u8_t force)
   u16_t increment_magnitude;
 
   LWIP_ASSERT("p != NULL", p != NULL);
-  if ((header_size_increment == 0) || (p == NULL) || (header_size_increment > 0xFFFF)) {
+  if ((p == NULL) || (header_size_increment > 0xFFFF)) {
+    return 1;
+  }
+  if (header_size_increment == 0) {
     return 0;
   }
 
@@ -539,7 +545,7 @@ pbuf_add_header_impl(struct pbuf *p, size_t header_size_increment, u8_t force)
  * @param p pbuf to change the header size.
  * @param header_size_increment Number of bytes to increment header size which
  *          increases the size of the pbuf. New space is on the front.
- *          If hdr_size_inc is 0, this function does nothing and returns successful.
+ *          If header_size_increment is 0, this function does nothing and returns successful.
  *
  * PBUF_ROM and PBUF_REF type buffers cannot have their sizes increased, so
  * the call will fail. A check is made that the increase in header size does
@@ -575,7 +581,7 @@ pbuf_add_header_force(struct pbuf *p, size_t header_size_increment)
  * @param p pbuf to change the header size.
  * @param header_size_decrement Number of bytes to decrement header size which
  *          decreases the size of the pbuf.
- *          If hdr_size_inc is 0, this function does nothing and returns successful.
+ *          If header_size_decrement is 0, this function does nothing and returns successful.
  * @return non-zero on failure, zero on success.
  *
  */
@@ -586,7 +592,10 @@ pbuf_remove_header(struct pbuf *p, size_t header_size_decrement)
   u16_t increment_magnitude;
 
   LWIP_ASSERT("p != NULL", p != NULL);
-  if ((header_size_decrement == 0) || (p == NULL) || (header_size_decrement > 0xFFFF)) {
+  if ((p == NULL) || (header_size_decrement > 0xFFFF)) {
+    return 1;
+  }
+  if (header_size_decrement == 0) {
     return 0;
   }
 
@@ -632,7 +641,7 @@ pbuf_header_impl(struct pbuf *p, s16_t header_size_increment, u8_t force)
  * @param header_size_increment Number of bytes to increment header size which
  * increases the size of the pbuf. New space is on the front.
  * (Using a negative value decreases the header size.)
- * If hdr_size_inc is 0, this function does nothing and returns successful.
+ * If header_size_increment is 0, this function does nothing and returns successful.
  *
  * PBUF_ROM and PBUF_REF type buffers cannot have their sizes increased, so
  * the call will fail. A check is made that the increase in header size does
@@ -833,7 +842,7 @@ pbuf_ref(struct pbuf *p)
 {
   /* pbuf given? */
   if (p != NULL) {
-    SYS_ARCH_SET(p->ref, (u8_t)(p->ref + 1));
+    SYS_ARCH_SET(p->ref, (LWIP_PBUF_REF_T)(p->ref + 1));
     LWIP_ASSERT("pbuf ref overflow", p->ref > 0);
   }
 }
@@ -1077,27 +1086,24 @@ void *
 pbuf_get_contiguous(const struct pbuf *p, void *buffer, size_t bufsize, u16_t len, u16_t offset)
 {
   const struct pbuf *q;
+  uint16_t out_offset;
 
   LWIP_ERROR("pbuf_get_contiguous: invalid buf", (p != NULL), return NULL;);
   LWIP_ERROR("pbuf_get_contiguous: invalid dataptr", (buffer != NULL), return NULL;);
   LWIP_ERROR("pbuf_get_contiguous: invalid dataptr", (bufsize >= len), return NULL;);
 
-  for (q = p; q != NULL; q = q->next) {
-    if ((offset != 0) && (offset >= q->len)) {
-      /* don't copy from this buffer -> on to the next */
-      offset = (u16_t)(offset - q->len);
-    } else {
-      if (q->len >= (offset + len)) {
-        /* all data in this pbuf, return zero-copy */
-        return (u8_t *)q->payload + offset;
-      }
-      /* need to copy */
-      if (pbuf_copy_partial(q, buffer, len, offset) != len) {
-        /* copying failed: pbuf is too short */
-        return NULL;
-      }
-      return buffer;
+  q = pbuf_skip_const(p, offset, &out_offset);
+  if (q != NULL) {
+    if (q->len >= (out_offset + len)) {
+      /* all data in this pbuf, return zero-copy */
+      return (u8_t *)q->payload + out_offset;
     }
+    /* need to copy */
+    if (pbuf_copy_partial(q, buffer, len, out_offset) != len) {
+      /* copying failed: pbuf is too short */
+      return NULL;
+    }
+    return buffer;
   }
   /* pbuf is too short (offset does not fit in) */
   return NULL;
@@ -1254,7 +1260,7 @@ pbuf_take_at(struct pbuf *buf, const void *dataptr, u16_t len, u16_t offset)
     const u8_t *src_ptr = (const u8_t *)dataptr;
     /* copy the part that goes into the first pbuf */
     u16_t first_copy_len;
-    LWIP_ASSERT("chekc pbuf_skip result", target_offset < q->len);
+    LWIP_ASSERT("check pbuf_skip result", target_offset < q->len);
     first_copy_len = (u16_t)LWIP_MIN(q->len - target_offset, len);
     MEMCPY(((u8_t *)q->payload) + target_offset, dataptr, first_copy_len);
     remaining_len = (u16_t)(remaining_len - first_copy_len);

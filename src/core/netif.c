@@ -540,7 +540,7 @@ netif_remove(struct netif *netif)
   } else {
     /*  look for netif further down the list */
     struct netif *tmp_netif;
-    for (tmp_netif = netif_list; tmp_netif != NULL; tmp_netif = tmp_netif->next) {
+    NETIF_FOREACH(tmp_netif) {
       if (tmp_netif->next == netif) {
         tmp_netif->next = netif->next;
         break;
@@ -742,9 +742,7 @@ netif_set_up(struct netif *netif)
     }
 #endif
 
-    if (netif->flags & NETIF_FLAG_LINK_UP) {
-      netif_issue_reports(netif, NETIF_REPORT_TYPE_IPV4 | NETIF_REPORT_TYPE_IPV6);
-    }
+    netif_issue_reports(netif, NETIF_REPORT_TYPE_IPV4 | NETIF_REPORT_TYPE_IPV6);
   }
 }
 
@@ -753,6 +751,12 @@ netif_set_up(struct netif *netif)
 static void
 netif_issue_reports(struct netif *netif, u8_t report_type)
 {
+  /* Only send reports when both link and admin states are up */
+  if (!(netif->flags & NETIF_FLAG_LINK_UP) ||
+      !(netif->flags & NETIF_FLAG_UP)) {
+    return;
+  }
+
 #if LWIP_IPV4
   if ((report_type & NETIF_REPORT_TYPE_IPV4) &&
       !ip4_addr_isany_val(*netif_ip4_addr(netif))) {
@@ -865,9 +869,8 @@ netif_set_link_up(struct netif *netif)
     autoip_network_changed(netif);
 #endif /* LWIP_AUTOIP */
 
-    if (netif->flags & NETIF_FLAG_UP) {
-      netif_issue_reports(netif, NETIF_REPORT_TYPE_IPV4 | NETIF_REPORT_TYPE_IPV6);
-    }
+    netif_issue_reports(netif, NETIF_REPORT_TYPE_IPV4 | NETIF_REPORT_TYPE_IPV6);
+
     NETIF_LINK_CALLBACK(netif);
 #if LWIP_NETIF_EXT_STATUS_CALLBACK
     {
@@ -1186,7 +1189,7 @@ netif_ip6_addr_set_parts(struct netif *netif, s8_t addr_idx, u32_t i0, u32_t i1,
     IP_ADDR6(&new_ipaddr, i0, i1, i2, i3);
     ip6_addr_assign_zone(ip_2_ip6(&new_ipaddr), IP6_UNICAST, netif);
 
-    if (netif_ip6_addr_state(netif, addr_idx) & IP6_ADDR_VALID) {
+    if (ip6_addr_isvalid(netif_ip6_addr_state(netif, addr_idx))) {
 #if LWIP_TCP
       tcp_netif_ip_addr_changed(netif_ip_addr6(netif, addr_idx), &new_ipaddr);
 #endif /* LWIP_TCP */
@@ -1201,7 +1204,7 @@ netif_ip6_addr_set_parts(struct netif *netif, s8_t addr_idx, u32_t i0, u32_t i1,
 
     ip_addr_copy(netif->ip6_addr[addr_idx], new_ipaddr);
 
-    if (netif_ip6_addr_state(netif, addr_idx) & IP6_ADDR_VALID) {
+    if (ip6_addr_isvalid(netif_ip6_addr_state(netif, addr_idx))) {
       netif_issue_reports(netif, NETIF_REPORT_TYPE_IPV6);
       NETIF_STATUS_CALLBACK(netif);
     }

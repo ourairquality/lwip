@@ -338,19 +338,26 @@ sock_inc_used(struct lwip_sock *sock)
   SYS_ARCH_UNPROTECT(lev);
 }
 
+/* Like sock_inc_used(), but called under SYS_ARCH_PROTECT lock. */
+static void
+sock_inc_used_locked(struct lwip_sock *sock)
+{
+  LWIP_ASSERT("sock != NULL", sock != NULL);
+
+  ++sock->fd_used;
+  LWIP_ASSERT("sock->fd_used != 0", sock->fd_used != 0);
+}
+
 /* In full-duplex mode,sock->fd_used != 0 prevents a socket descriptor from being
  * released (and possibly reused) when used from more than one thread
  * (e.g. read-while-write or close-while-write, etc)
  * This function is called at the end of functions using (try)get_socket*().
  */
 static void
-done_socket(struct lwip_sock *sock)
+done_socket_locked(struct lwip_sock *sock)
 {
-  SYS_ARCH_DECL_PROTECT(lev);
-
   LWIP_ASSERT("sock != NULL", sock != NULL);
 
-  SYS_ARCH_PROTECT(lev);
   LWIP_ASSERT("sock->fd_used > 0", sock->fd_used > 0);
   if (--sock->fd_used == 0) {
     if (sock->fd_free_pending) {
@@ -359,11 +366,21 @@ done_socket(struct lwip_sock *sock)
       free_socket(sock, sock->fd_free_pending & LWIP_SOCK_FD_FREE_TCP);
     }
   }
+}
+
+static void
+done_socket(struct lwip_sock *sock)
+{
+  SYS_ARCH_DECL_PROTECT(lev);
+  SYS_ARCH_PROTECT(lev);
+  done_socket_locked(sock);
   SYS_ARCH_UNPROTECT(lev);
 }
 #else /* LWIP_NETCONN_FULLDUPLEX */
 #define sock_inc_used(sock)
+#define sock_inc_used_locked(sock)
 #define done_socket(sock)
+#define done_socket_locked(sock)
 #endif /* LWIP_NETCONN_FULLDUPLEX */
 
 /* Translate a socket 'int' into a pointer (only fails if the index is invalid) */
@@ -391,6 +408,17 @@ tryget_socket_unconn(int fd)
   struct lwip_sock *ret = tryget_socket_unconn_nouse(fd);
   if (ret != NULL) {
     sock_inc_used(ret);
+  }
+  return ret;
+}
+
+/* Like tryget_socket_unconn(), but called under SYS_ARCH_PROTECT lock. */
+static struct lwip_sock *
+tryget_socket_unconn_locked(int fd)
+{
+  struct lwip_sock *ret = tryget_socket_unconn_nouse(fd);
+  if (ret != NULL) {
+    sock_inc_used_locked(ret);
   }
   return ret;
 }
@@ -926,9 +954,9 @@ lwip_recv_tcp(struct lwip_sock *sock, void *mem, size_t len, int flags)
     /* once we have some data to return, only add more if we don't need to wait */
     apiflags |= NETCONN_DONTBLOCK;
     /* @todo: do we need to support peeking more than one pbuf? */
-  } while ((recv_left > 0) || (flags & MSG_PEEK));
+  } while ((recv_left > 0) && !(flags & MSG_PEEK));
 lwip_recv_tcp_done:
-  if (recvd > 0) {
+  if ((recvd > 0) && !(flags & MSG_PEEK)) {
     /* ensure window update after copying all data */
     netconn_tcp_recvd(sock->conn, (size_t)recvd);
   }
@@ -1774,7 +1802,7 @@ lwip_selscan(int maxfdp1, fd_set *readset_in, fd_set *writeset_in, fd_set *excep
     }
     /* First get the socket's status (protected)... */
     SYS_ARCH_PROTECT(lev);
-    sock = tryget_socket_unconn(i);
+    sock = tryget_socket_unconn_locked(i);
     if (sock != NULL) {
       void *lastdata = sock->lastdata.pbuf;
       s16_t rcvevent = sock->rcvevent;
@@ -1833,7 +1861,7 @@ lwip_select_inc_sockets_used_set(int maxfdp, fd_set *fdset, fd_set *used_sockets
       if (FD_ISSET(i, fdset) && !FD_ISSET(i, used_sockets)) {
         struct lwip_sock *sock;
         SYS_ARCH_PROTECT(lev);
-        sock = tryget_socket_unconn(i);
+        sock = tryget_socket_unconn_locked(i);
         if (sock != NULL) {
           /* leave the socket used until released by lwip_select_dec_sockets_used */
           FD_SET(i, used_sockets);
@@ -1962,20 +1990,20 @@ lwip_select(int maxfdp1, fd_set *readset, fd_set *writeset, fd_set *exceptset,
             (exceptset && FD_ISSET(i, exceptset))) {
           struct lwip_sock *sock;
           SYS_ARCH_PROTECT(lev);
-          sock = tryget_socket_unconn(i);
+          sock = tryget_socket_unconn_locked(i);
           if (sock != NULL) {
             sock->select_waiting++;
             if (sock->select_waiting == 0) {
               /* overflow - too many threads waiting */
               sock->select_waiting--;
-              done_socket(sock);
+              done_socket_locked(sock);
               nready = -1;
               maxfdp2 = i;
               SYS_ARCH_UNPROTECT(lev);
               set_errno(EBUSY);
               break;
             }
-            done_socket(sock);
+            done_socket_locked(sock);
           } else {
             /* Not a valid socket */
             nready = -1;
@@ -2021,14 +2049,14 @@ lwip_select(int maxfdp1, fd_set *readset, fd_set *writeset, fd_set *exceptset,
             (exceptset && FD_ISSET(i, exceptset))) {
           struct lwip_sock *sock;
           SYS_ARCH_PROTECT(lev);
-          sock = tryget_socket_unconn(i);
+          sock = tryget_socket_unconn_locked(i);
           if (sock != NULL) {
             /* for now, handle select_waiting==0... */
             LWIP_ASSERT("sock->select_waiting > 0", sock->select_waiting > 0);
             if (sock->select_waiting > 0) {
               sock->select_waiting--;
             }
-            done_socket(sock);
+            done_socket_locked(sock);
           } else {
             /* Not a valid socket */
             nready = -1;
@@ -2128,7 +2156,7 @@ lwip_pollscan(struct pollfd *fds, nfds_t nfds, enum lwip_pollscan_opts opts)
     if (fds[fdi].fd >= 0 && (fds[fdi].revents & POLLNVAL) == 0) {
       /* First get the socket's status (protected)... */
       SYS_ARCH_PROTECT(lev);
-      sock = tryget_socket_unconn(fds[fdi].fd);
+      sock = tryget_socket_unconn_locked(fds[fdi].fd);
       if (sock != NULL) {
         void* lastdata = sock->lastdata.pbuf;
         s16_t rcvevent = sock->rcvevent;
@@ -2140,19 +2168,19 @@ lwip_pollscan(struct pollfd *fds, nfds_t nfds, enum lwip_pollscan_opts opts)
           if (sock->select_waiting == 0) {
             /* overflow - too many threads waiting */
             sock->select_waiting--;
-            done_socket(sock);
+            done_socket_locked(sock);
             nready = -1;
             SYS_ARCH_UNPROTECT(lev);
             break;
           }
-          done_socket(sock);
+          done_socket_locked(sock);
         } else if ((opts & LWIP_POLLSCAN_DEC_WAIT) != 0) {
           /* for now, handle select_waiting==0... */
           LWIP_ASSERT("sock->select_waiting > 0", sock->select_waiting > 0);
           if (sock->select_waiting > 0) {
             sock->select_waiting--;
           }
-          done_socket(sock);
+          done_socket_locked(sock);
         }
 
         SYS_ARCH_UNPROTECT(lev);
@@ -2204,15 +2232,12 @@ static void
 lwip_poll_inc_sockets_used(struct pollfd *fds, nfds_t nfds)
 {
   nfds_t fdi;
-  SYS_ARCH_DECL_PROTECT(lev);
 
   if(fds) {
     /* Go through each struct pollfd in the array. */
     for (fdi = 0; fdi < nfds; fdi++) {
-      SYS_ARCH_PROTECT(lev);
       /* Increase the reference counter */
       tryget_socket_unconn(fds[fdi].fd);
-      SYS_ARCH_UNPROTECT(lev);
     }
   }
 }
@@ -2449,7 +2474,6 @@ event_callback(struct netconn *conn, enum netconn_evt evt, u16_t len)
     case NETCONN_EVT_RCVMINUS:
       sock->rcvevent--;
       check_waiters = 0;
-      sock->sendevent = 1;
       break;
     case NETCONN_EVT_SENDPLUS:
       if (sock->sendevent) {
@@ -2460,7 +2484,6 @@ event_callback(struct netconn *conn, enum netconn_evt evt, u16_t len)
     case NETCONN_EVT_SENDMINUS:
       sock->sendevent = 0;
       check_waiters = 0;
-      sock->errevent = 1;
       break;
     case NETCONN_EVT_ERROR:
       sock->errevent = 1;
@@ -2778,6 +2801,26 @@ lwip_getsockopt_callback(void *arg)
 }
 #endif  /* LWIP_TCPIP_CORE_LOCKING */
 
+static int
+lwip_sockopt_to_ipopt(int optname)
+{
+  /* Map SO_* values to our internal SOF_* values
+   * We should not rely on #defines in socket.h
+   * being in sync with ip.h.
+   */
+  switch (optname) {
+  case SO_BROADCAST:
+    return SOF_BROADCAST;
+  case SO_KEEPALIVE:
+    return SOF_KEEPALIVE;
+  case SO_REUSEADDR:
+    return SOF_REUSEADDR;
+  default:
+    LWIP_ASSERT("Unknown socket option", 0);
+    return 0;
+  }
+}
+
 /** lwip_getsockopt_impl: the actual implementation of getsockopt:
  * same argument as lwip_getsockopt, either called directly or through callback
  */
@@ -2822,6 +2865,9 @@ lwip_getsockopt_impl(int s, int level, int optname, void *optval, socklen_t *opt
             done_socket(sock);
             return ENOPROTOOPT;
           }
+
+          optname = lwip_sockopt_to_ipopt(optname);
+
           LWIP_SOCKOPT_CHECK_OPTLEN_CONN_PCB(sock, *optlen, int);
           *(int *)optval = ip_get_option(sock->conn->pcb.ip, optname);
           LWIP_DEBUGF(SOCKETS_DEBUG, ("lwip_getsockopt(%d, SOL_SOCKET, optname=0x%x, ..) = %s\n",
@@ -2895,13 +2941,13 @@ lwip_getsockopt_impl(int s, int level, int optname, void *optval, socklen_t *opt
         case SO_NO_CHECK:
           LWIP_SOCKOPT_CHECK_OPTLEN_CONN_PCB_TYPE(sock, *optlen, int, NETCONN_UDP);
 #if LWIP_UDPLITE
-          if ((udp_flags(sock->conn->pcb.udp) & UDP_FLAGS_UDPLITE) != 0) {
+          if (udp_is_flag_set(sock->conn->pcb.udp, UDP_FLAGS_UDPLITE)) {
             /* this flag is only available for UDP, not for UDP lite */
             done_socket(sock);
             return EAFNOSUPPORT;
           }
 #endif /* LWIP_UDPLITE */
-          *(int *)optval = (udp_flags(sock->conn->pcb.udp) & UDP_FLAGS_NOCHKSUM) ? 1 : 0;
+          *(int *)optval = udp_is_flag_set(sock->conn->pcb.udp, UDP_FLAGS_NOCHKSUM) ? 1 : 0;
           break;
 #endif /* LWIP_UDP*/
         default:
@@ -3221,6 +3267,9 @@ lwip_setsockopt_impl(int s, int level, int optname, const void *optval, socklen_
             done_socket(sock);
             return ENOPROTOOPT;
           }
+
+          optname = lwip_sockopt_to_ipopt(optname);
+
           LWIP_SOCKOPT_CHECK_OPTLEN_CONN_PCB(sock, optlen, int);
           if (*(const int *)optval) {
             ip_set_option(sock->conn->pcb.ip, optname);
@@ -3290,7 +3339,7 @@ lwip_setsockopt_impl(int s, int level, int optname, const void *optval, socklen_
         case SO_NO_CHECK:
           LWIP_SOCKOPT_CHECK_OPTLEN_CONN_PCB_TYPE(sock, optlen, int, NETCONN_UDP);
 #if LWIP_UDPLITE
-          if ((udp_flags(sock->conn->pcb.udp) & UDP_FLAGS_UDPLITE) != 0) {
+          if (udp_is_flag_set(sock->conn->pcb.udp, UDP_FLAGS_UDPLITE)) {
             /* this flag is only available for UDP, not for UDP lite */
             done_socket(sock);
             return EAFNOSUPPORT;

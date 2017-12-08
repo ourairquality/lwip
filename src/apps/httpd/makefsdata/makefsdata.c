@@ -120,6 +120,7 @@ int file_put_ascii(FILE *file, const char *ascii_string, int len, int *i);
 int s_put_ascii(char *buf, const char *ascii_string, int len, int *i);
 void concat_files(const char *file1, const char *file2, const char *targetfile);
 int check_path(char *path, size_t size);
+static int checkSsiByFilelist(const char* filename_listfile);
 
 /* 5 bytes per char + 3 bytes per line */
 static char file_buffer_c[COPY_BUFSIZE * 5 + ((COPY_BUFSIZE / HEX_BYTES_PER_LINE) * 3)];
@@ -143,9 +144,13 @@ size_t overallDataBytes = 0;
 struct file_entry *first_file = NULL;
 struct file_entry *last_file = NULL;
 
+static char *ssi_file_buffer;
+static char **ssi_file_lines;
+static size_t ssi_file_num_lines;
+
 static void print_usage(void)
 {
-  printf(" Usage: htmlgen [targetdir] [-s] [-e] [-i] [-11] [-nossi] [-c] [-f:<filename>] [-m] [-svr:<name>]" USAGE_ARG_DEFLATE NEWLINE NEWLINE);
+  printf(" Usage: htmlgen [targetdir] [-s] [-e] [-i] [-11] [-nossi] [-ssi:<filename>] [-c] [-f:<filename>] [-m] [-svr:<name>]" USAGE_ARG_DEFLATE NEWLINE NEWLINE);
   printf("   targetdir: relative or absolute path to files to convert" NEWLINE);
   printf("   switch -s: toggle processing of subdirectories (default is on)" NEWLINE);
   printf("   switch -e: exclude HTTP header from file (header is created at runtime, default is off)" NEWLINE);
@@ -193,23 +198,30 @@ int main(int argc, char *argv[])
         snprintf(serverIDBuffer, sizeof(serverIDBuffer), "Server: %s\r\n", &argv[i][5]);
         serverID = serverIDBuffer;
         printf("Using Server-ID: \"%s\"\n", serverID);
-      } else if (strstr(argv[i], "-s") == argv[i]) {
+      } else if (!strcmp(argv[i], "-s")) {
         processSubs = 0;
-      } else if (strstr(argv[i], "-e") == argv[i]) {
+      } else if (!strcmp(argv[i], "-e")) {
         includeHttpHeader = 0;
-      } else if (strstr(argv[i], "-11") == argv[i]) {
+      } else if (!strcmp(argv[i], "-11")) {
         useHttp11 = 1;
-      } else if (strstr(argv[i], "-nossi") == argv[i]) {
+      } else if (!strcmp(argv[i], "-nossi")) {
         supportSsi = 0;
-      } else if (strstr(argv[i], "-c") == argv[i]) {
+      } else if (strstr(argv[i], "-ssi:") == argv[i]) {
+        const char* ssi_list_filename = &argv[i][5];
+        if (checkSsiByFilelist(ssi_list_filename)) {
+          printf("Reading list of SSI files from \"%s\"\n", ssi_list_filename);
+        } else {
+          printf("Failed to load list of SSI files from \"%s\"\n", ssi_list_filename);
+        }
+      } else if (!strcmp(argv[i], "-c")) {
         precalcChksum = 1;
       } else if (strstr(argv[i], "-f:") == argv[i]) {
         strncpy(targetfile, &argv[i][3], sizeof(targetfile) - 1);
         targetfile[sizeof(targetfile) - 1] = 0;
         printf("Writing to file \"%s\"\n", targetfile);
-      } else if (strstr(argv[i], "-m") == argv[i]) {
+      } else if (!strcmp(argv[i], "-m")) {
         includeLastModified = 1;
-      } else if (strstr(argv[i], "-defl") == argv[i]) {
+      } else if (!strcmp(argv[i], "-defl")) {
 #if MAKEFS_SUPPORT_DEFLATE
         char *colon = strstr(argv[i], ":");
         if (colon) {
@@ -340,6 +352,13 @@ int main(int argc, char *argv[])
     struct file_entry *fe = first_file;
     first_file = fe->next;
     free(fe);
+  }
+
+  if (ssi_file_buffer) {
+    free(ssi_file_buffer);
+  }
+  if (ssi_file_lines) {
+    free(ssi_file_lines);
   }
 
   return 0;
@@ -713,12 +732,114 @@ static void register_filename(const char *qualifiedName)
   }
 }
 
+static int checkSsiByFilelist(const char* filename_listfile)
+{
+  FILE *f = fopen(filename_listfile, "r");
+  if (f != NULL) {
+    char *buf;
+    long rs;
+    size_t fsize, readcount;
+    size_t i, l, num_lines;
+    char **lines;
+    int state;
+
+    fseek(f, 0, SEEK_END);
+    rs = ftell(f);
+    if (rs < 0) {
+      printf("ftell failed with %d\n", errno);
+      fclose(f);
+      return 0;
+    }
+    fsize = (size_t)rs;
+    fseek(f, 0, SEEK_SET);
+    buf = (char*)malloc(fsize);
+    if (!buf) {
+      printf("failed to allocate ssi file buffer\n");
+      fclose(f);
+      return 0;
+    }
+    memset(buf, 0, fsize);
+    readcount = fread(buf, 1, fsize, f);
+    fclose(f);
+    if ((readcount > fsize) || !readcount) {
+      printf("failed to read data from ssi file\n");
+      return 0;
+    }
+
+    /* first pass: get the number of lines (and convert newlines to '0') */
+    num_lines = 1;
+    for (i = 0; i < readcount; i++) {
+      if (buf[i] == '\n') {
+        num_lines++;
+        buf[i] = 0;
+      } else if (buf[i] == '\r') {
+        buf[i] = 0;
+      }
+    }
+    /* allocate the line pointer array */
+    lines = (char**)malloc(sizeof(char*) * num_lines);
+    if (!lines) {
+      printf("failed to allocate ssi line buffer\n");
+      return 0;
+    }
+    memset(lines, 0, sizeof(char*) * num_lines);
+    l = 0;
+    state = 0;
+    for (i = 0; i < readcount; i++) {
+      if (state) {
+        /* waiting for null */
+        if (buf[i] == 0) {
+          state = 0;
+        }
+      } else {
+        /* waiting for beginning of new string */
+        if (buf[i] != 0) {
+          LWIP_ASSERT("lines array overflow", l < num_lines);
+          lines[l] = &buf[i];
+          state = 1;
+          l++;
+        }
+      }
+    }
+    LWIP_ASSERT("lines array overflow", l < num_lines);
+
+    ssi_file_buffer = buf;
+    ssi_file_lines = lines;
+    ssi_file_num_lines = l;
+  }
+  return 0;
+}
+
 static int is_ssi_file(const char *filename)
 {
-  size_t loop;
-  for (loop = 0; loop < NUM_SHTML_EXTENSIONS; loop++) {
-    if (strstr(filename, g_pcSSIExtensions[loop])) {
-      return 1;
+  if (supportSsi) {
+    if (ssi_file_buffer) {
+      /* compare by list */
+      size_t i;
+      int ret = 0;
+      /* build up the relative path to this file */
+      size_t sublen = strlen(curSubdir);
+      size_t freelen = sizeof(curSubdir) - sublen - 1;
+      strncat(curSubdir, "/", freelen);
+      strncat(curSubdir, filename, freelen - 1);
+      curSubdir[sizeof(curSubdir) - 1] = 0;
+      for (i = 0; i < ssi_file_num_lines; i++) {
+        const char *listed_file = ssi_file_lines[i];
+        /* compare without the leading '/' */
+        if (!strcmp(&curSubdir[1], listed_file)) {
+          ret = 1;
+        }
+      }
+      curSubdir[sublen] = 0;
+      return ret;
+    } else {
+      /* check file extension */
+      size_t loop;
+      for (loop = 0; loop < NUM_SHTML_EXTENSIONS; loop++) {
+        if (strstr(filename, g_pcSSIExtensions[loop])) {
+          return 1;
+        }
+      }
     }
   }
   return 0;
@@ -734,10 +855,12 @@ int process_file(FILE *data_file, FILE *struct_file, const char *filename)
   u16_t http_hdr_len = 0;
   int chksum_count = 0;
   u8_t flags = 0;
-  const char *flags_str;
   u8_t has_content_len;
   u8_t *file_data;
+  int is_ssi;
+  int can_be_compressed;
   int is_compressed = 0;
+  int flags_printed;
 
   /* create qualified name (@todo: prepend slash or not?) */
   sprintf(qualifiedName, "%s/%s", curSubdir, filename);
@@ -765,13 +888,21 @@ int process_file(FILE *data_file, FILE *struct_file, const char *filename)
 #endif /* ALIGN_PAYLOAD */
   fprintf(data_file, NEWLINE);
 
-  has_content_len = !is_ssi_file(filename);
-  file_data = get_file_data(filename, &file_size, includeHttpHeader && has_content_len, &is_compressed);
+  is_ssi = is_ssi_file(filename);
+  if (is_ssi) {
+    flags |= FS_FILE_FLAGS_SSI;
+  }
+  has_content_len = !is_ssi;
+  can_be_compressed = includeHttpHeader && !is_ssi;
+  file_data = get_file_data(filename, &file_size, can_be_compressed, &is_compressed);
   if (includeHttpHeader) {
     file_write_http_header(data_file, filename, file_size, &http_hdr_len, &http_hdr_chksum, has_content_len, is_compressed);
-    flags = FS_FILE_FLAGS_HEADER_INCLUDED;
+    flags |= FS_FILE_FLAGS_HEADER_INCLUDED;
     if (has_content_len) {
       flags |= FS_FILE_FLAGS_HEADER_PERSISTENT;
+      if (useHttp11) {
+        flags |= FS_FILE_FLAGS_HEADER_HTTPVER_1_1;
+      }
     }
   }
   if (precalcChksum) {
@@ -784,21 +915,37 @@ int process_file(FILE *data_file, FILE *struct_file, const char *filename)
   fprintf(struct_file, "data_%s," NEWLINE, varname);
   fprintf(struct_file, "data_%s + %d," NEWLINE, varname, i);
   fprintf(struct_file, "sizeof(data_%s) - %d," NEWLINE, varname, i);
-  switch (flags) {
-    case (FS_FILE_FLAGS_HEADER_INCLUDED):
-      flags_str = "FS_FILE_FLAGS_HEADER_INCLUDED";
-      break;
-    case (FS_FILE_FLAGS_HEADER_PERSISTENT):
-      flags_str = "FS_FILE_FLAGS_HEADER_PERSISTENT";
-      break;
-    case (FS_FILE_FLAGS_HEADER_INCLUDED | FS_FILE_FLAGS_HEADER_PERSISTENT):
-      flags_str = "FS_FILE_FLAGS_HEADER_INCLUDED | FS_FILE_FLAGS_HEADER_PERSISTENT";
-      break;
-    default:
-      flags_str = "0";
-      break;
+
+  flags_printed = 0;
+  if (flags & FS_FILE_FLAGS_HEADER_INCLUDED) {
+    fputs("FS_FILE_FLAGS_HEADER_INCLUDED", struct_file);
+    flags_printed = 1;
   }
-  fprintf(struct_file, "%s," NEWLINE, flags_str);
+  if (flags & FS_FILE_FLAGS_HEADER_PERSISTENT) {
+    if (flags_printed) {
+      fputs(" | ", struct_file);
+    }
+    fputs("FS_FILE_FLAGS_HEADER_PERSISTENT", struct_file);
+    flags_printed = 1;
+  }
+  if (flags & FS_FILE_FLAGS_HEADER_HTTPVER_1_1) {
+    if (flags_printed) {
+      fputs(" | ", struct_file);
+    }
+    fputs("FS_FILE_FLAGS_HEADER_HTTPVER_1_1", struct_file);
+    flags_printed = 1;
+  }
+  if (flags & FS_FILE_FLAGS_SSI) {
+    if (flags_printed) {
+      fputs(" | ", struct_file);
+    }
+    fputs("FS_FILE_FLAGS_SSI", struct_file);
+    flags_printed = 1;
+  }
+  if (!flags_printed) {
+    fputs("0", struct_file);
+  }
+  fputs("," NEWLINE, struct_file);
   if (precalcChksum) {
     fprintf(struct_file, "#if HTTPD_PRECALCULATED_CHECKSUM" NEWLINE);
     fprintf(struct_file, "%d, chksums_%s," NEWLINE, chksum_count, varname);

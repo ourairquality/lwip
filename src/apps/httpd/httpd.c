@@ -104,6 +104,9 @@
 #ifdef LWIP_HOOK_FILENAME
 #include LWIP_HOOK_FILENAME
 #endif
+#if LWIP_HTTPD_TIMING
+#include "lwip/sys.h"
+#endif /* LWIP_HTTPD_TIMING */
 
 #include <string.h> /* memset */
 #include <stdlib.h> /* atoi */
@@ -138,6 +141,7 @@
 #endif
 
 /* Return values for http_send_*() */
+#define HTTP_DATA_TO_SEND_FREED    3
 #define HTTP_DATA_TO_SEND_BREAK    2
 #define HTTP_DATA_TO_SEND_CONTINUE 1
 #define HTTP_NO_DATA_TO_SEND       0
@@ -155,8 +159,7 @@ const default_filename g_psDefaultFilenames[] = {
   {"/index.htm",   0 }
 };
 
-#define NUM_DEFAULT_FILENAMES (sizeof(g_psDefaultFilenames) /   \
-                               sizeof(default_filename))
+#define NUM_DEFAULT_FILENAMES LWIP_ARRAYSIZE(g_psDefaultFilenames)
 
 #if LWIP_HTTPD_SUPPORT_REQUESTLIST
 /** HTTP request is copied here from pbufs for simple parsing */
@@ -972,6 +975,7 @@ get_http_headers(struct http_state *hs, const char *uri)
  *           - HTTP_DATA_TO_SEND_CONTINUE: continue with sending HTTP body
  *           - HTTP_DATA_TO_SEND_BREAK: data has been enqueued, headers pending,
  *                                      so don't send HTTP body yet
+ *           - HTTP_DATA_TO_SEND_FREED: htt_state and pcb are already freed
  */
 static u8_t
 http_send_headers(struct altcp_pcb *pcb, struct http_state *hs)
@@ -1038,7 +1042,11 @@ http_send_headers(struct altcp_pcb *pcb, struct http_state *hs)
      * instead of waiting for ACK from remote side to continue
      * (which would happen when sending files from async read). */
     if (http_check_eof(pcb, hs)) {
-      data_to_send = HTTP_DATA_TO_SEND_CONTINUE;
+      data_to_send = HTTP_DATA_TO_SEND_BREAK;
+    } else {
+      /* At this point, for non-keepalive connections, hs is deallocated an
+         pcb is closed. */
+      return HTTP_DATA_TO_SEND_FREED;
     }
   }
   /* If we get here and there are still header bytes to send, we send
@@ -1552,8 +1560,9 @@ http_send(struct altcp_pcb *pcb, struct http_state *hs)
   /* Do we have any more header data to send for this file? */
   if (hs->hdr_index < NUM_FILE_HDR_STRINGS) {
     data_to_send = http_send_headers(pcb, hs);
-    if ((data_to_send != HTTP_DATA_TO_SEND_CONTINUE) &&
-        (hs->hdr_index < NUM_FILE_HDR_STRINGS)) {
+    if ((data_to_send == HTTP_DATA_TO_SEND_FREED) ||
+        ((data_to_send != HTTP_DATA_TO_SEND_CONTINUE) &&
+         (hs->hdr_index < NUM_FILE_HDR_STRINGS))) {
       return data_to_send;
     }
   }
@@ -1598,8 +1607,7 @@ http_send(struct altcp_pcb *pcb, struct http_state *hs)
 static err_t
 http_find_error_file(struct http_state *hs, u16_t error_nr)
 {
-  const char *uri1, *uri2, *uri3;
-  err_t err;
+  const char *uri, *uri1, *uri2, *uri3;
 
   if (error_nr == 501) {
     uri1 = "/501.html";
@@ -1611,19 +1619,18 @@ http_find_error_file(struct http_state *hs, u16_t error_nr)
     uri2 = "/400.htm";
     uri3 = "/400.shtml";
   }
-  err = fs_open(&hs->file_handle, uri1);
-  if (err != ERR_OK) {
-    err = fs_open(&hs->file_handle, uri2);
-    if (err != ERR_OK) {
-      err = fs_open(&hs->file_handle, uri3);
-      if (err != ERR_OK) {
-        LWIP_DEBUGF(HTTPD_DEBUG, ("Error page for error %"U16_F" not found\n",
-                                  error_nr));
-        return ERR_ARG;
-      }
-    }
+  if (fs_open(&hs->file_handle, uri1) == ERR_OK) {
+    uri = uri1;
+  } else if (fs_open(&hs->file_handle, uri2) == ERR_OK) {
+    uri = uri2;
+  } else if (fs_open(&hs->file_handle, uri3) == ERR_OK) {
+    uri = uri3;
+  } else {
+    LWIP_DEBUGF(HTTPD_DEBUG, ("Error page for error %"U16_F" not found\n",
+                              error_nr));
+    return ERR_ARG;
   }
-  return http_init_file(hs, &hs->file_handle, 0, NULL, 0, NULL);
+  return http_init_file(hs, &hs->file_handle, 0, uri, 0, NULL);
 }
 #else /* LWIP_HTTPD_SUPPORT_EXTSTATUS */
 #define http_find_error_file(hs, error_nr) ERR_ARG
@@ -1839,7 +1846,9 @@ http_post_request(struct pbuf *inp, struct http_state *hs,
 }
 
 #if LWIP_HTTPD_POST_MANUAL_WND
-/** A POST implementation can call this function to update the TCP window.
+/**
+ * @ingroup httpd
+ * A POST implementation can call this function to update the TCP window.
  * This can be used to throttle data reception (e.g. when received data is
  * programmed to flash and data is received faster than programmed).
  *
@@ -2082,6 +2091,47 @@ badrequest:
   }
 }
 
+#if LWIP_HTTPD_SSI && (LWIP_HTTPD_SSI_BY_FILE_EXTENSION == 1)
+/* Check if SSI should be parsed for this file/URL
+ * (With LWIP_HTTPD_SSI_BY_FILE_EXTENSION == 2, this function can be
+ * overridden by an external implementation.)
+ *
+ * @return 1 for SSI, 0 for standard files
+ */
+static u8_t
+http_uri_is_ssi(struct fs_file *file, const char *uri)
+{
+  size_t loop;
+  u8_t tag_check = 0;
+  if (file != NULL) {
+    /* See if we have been asked for an shtml file and, if so,
+        enable tag checking. */
+    const char *ext = NULL, *sub;
+    char *param = (char *)strstr(uri, "?");
+    if (param != NULL) {
+      /* separate uri from parameters for now, set back later */
+      *param = 0;
+    }
+    sub = uri;
+    ext = uri;
+    for (sub = strstr(sub, "."); sub != NULL; sub = strstr(sub, ".")) {
+      ext = sub;
+      sub++;
+    }
+    for (loop = 0; loop < NUM_SHTML_EXTENSIONS; loop++) {
+      if (!lwip_stricmp(ext, g_pcSSIExtensions[loop])) {
+        tag_check = 1;
+        break;
+      }
+    }
+    if (param != NULL) {
+      *param = '?';
+    }
+  }
+  return tag_check;
+}
+#endif /* LWIP_HTTPD_SSI */
+
 /** Try to find the file specified by uri and, if found, initialize hs
  * accordingly.
  *
@@ -2190,29 +2240,12 @@ http_find_file(struct http_state *hs, const char *uri, int is_09)
     }
 #if LWIP_HTTPD_SSI
     if (file != NULL) {
-      /* See if we have been asked for an shtml file and, if so,
-         enable tag checking. */
-      const char *ext = NULL, *sub;
-      char *param = (char *)strstr(uri, "?");
-      if (param != NULL) {
-        /* separate uri from parameters for now, set back later */
-        *param = 0;
-      }
-      sub = uri;
-      ext = uri;
-      for (sub = strstr(sub, "."); sub != NULL; sub = strstr(sub, ".")) {
-        ext = sub;
-        sub++;
-      }
-      tag_check = 0;
-      for (loop = 0; loop < NUM_SHTML_EXTENSIONS; loop++) {
-        if (!lwip_stricmp(ext, g_pcSSIExtensions[loop])) {
-          tag_check = 1;
-          break;
-        }
-      }
-      if (param != NULL) {
-        *param = '?';
+      if (file->flags & FS_FILE_FLAGS_SSI) {
+        tag_check = 1;
+      } else {
+#if LWIP_HTTPD_SSI_BY_FILE_EXTENSION
+        tag_check = http_uri_is_ssi(file, uri);
+#endif /* LWIP_HTTPD_SSI_BY_FILE_EXTENSION */
       }
     }
 #endif /* LWIP_HTTPD_SSI */
@@ -2624,6 +2657,7 @@ httpd_inits(struct altcp_tls_config *conf)
 
 #if LWIP_HTTPD_SSI
 /**
+ * @ingroup httpd
  * Set the SSI handler function.
  *
  * @param ssi_handler the SSI handler function
@@ -2653,6 +2687,7 @@ http_set_ssi_handler(tSSIHandler ssi_handler, const char **tags, int num_tags)
 
 #if LWIP_HTTPD_CGI
 /**
+ * @ingroup httpd
  * Set an array of CGI filenames/handler functions
  *
  * @param cgis an array of CGI filenames/handler functions

@@ -806,9 +806,6 @@ static void
 netconn_drain(struct netconn *conn)
 {
   void *mem;
-#if LWIP_TCP
-  struct pbuf *p;
-#endif /* LWIP_TCP */
 
   /* This runs in tcpip_thread, so we don't need to lock against rx packets */
 
@@ -819,12 +816,7 @@ netconn_drain(struct netconn *conn)
       if (NETCONNTYPE_GROUP(conn->type) == NETCONN_TCP) {
         err_t err;
         if (!lwip_netconn_is_err_msg(mem, &err)) {
-          p = (struct pbuf *)mem;
-          /* pcb might be set to NULL already by err_tcp() */
-          if (conn->pcb.tcp != NULL) {
-            tcp_recved(conn->pcb.tcp, p->tot_len);
-          }
-          pbuf_free(p);
+          pbuf_free((struct pbuf *)mem);
         }
       } else
 #endif /* LWIP_TCP */
@@ -1358,7 +1350,7 @@ lwip_netconn_do_connect(void *m)
     }
   }
   msg->err = err;
-  /* For all other protocols, netconn_connect() calls TCPIP_APIMSG(),
+  /* For all other protocols, netconn_connect() calls netconn_apimsg(),
      so use TCPIP_APIMSG_ACK() here. */
   TCPIP_APIMSG_ACK(msg);
 }

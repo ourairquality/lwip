@@ -333,18 +333,12 @@ tcp_close_shutdown(struct tcp_pcb *pcb, u8_t rst_on_unacked_data)
 
       tcp_pcb_purge(pcb);
       TCP_RMV_ACTIVE(pcb);
-      if (pcb->state == ESTABLISHED) {
-        /* move to TIME_WAIT since we close actively */
-        pcb->state = TIME_WAIT;
-        TCP_REG(&tcp_tw_pcbs, pcb);
+      /* Deallocate the pcb since we already sent a RST for it */
+      if (tcp_input_pcb == pcb) {
+        /* prevent using a deallocated pcb: free it from tcp_input later */
+        tcp_trigger_input_pcb_close();
       } else {
-        /* CLOSE_WAIT: deallocate the pcb since we already sent a RST for it */
-        if (tcp_input_pcb == pcb) {
-          /* prevent using a deallocated pcb: free it from tcp_input later */
-          tcp_trigger_input_pcb_close();
-        } else {
-          memp_free(MEMP_TCP_PCB, pcb);
-        }
+        memp_free(MEMP_TCP_PCB, pcb);
       }
       return ERR_OK;
     }
@@ -923,7 +917,7 @@ tcp_recved(struct tcp_pcb *pcb, u16_t len)
     pcb->rcv_wnd = TCP_WND_MAX(pcb);
   } else if (pcb->rcv_wnd == 0) {
     /* rcv_wnd overflowed */
-    if ((pcb->state == CLOSE_WAIT) || (pcb->state == LAST_ACK)) {
+    if (TCP_STATE_IS_CLOSING(pcb->state)) {
       /* In passive close, we allow this, since the FIN bit is added to rcv_wnd
          by the stack itself, since it is not mandatory for an application
          to call tcp_recved() for the FIN bit, but e.g. the netconn API does so. */
@@ -1625,8 +1619,7 @@ tcp_recv_null(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
 #endif /* LWIP_CALLBACK_API */
 
 /**
- * Kills the oldest active connection that has the same or lower priority than
- * 'prio'.
+ * Kills the oldest active connection that has a lower priority than 'prio'.
  *
  * @param prio minimum priority
  */
@@ -1639,15 +1632,30 @@ tcp_kill_prio(u8_t prio)
 
   mprio = LWIP_MIN(TCP_PRIO_MAX, prio);
 
-  /* We kill the oldest active connection that has lower priority than prio. */
+  /* We want to kill connections with a lower prio, so bail out if 
+   * supplied prio is 0 - there can never be a lower prio
+   */
+  if (mprio == 0) {
+    return;
+  }
+
+  /* We only want kill connections with a lower prio, so decrement prio by one 
+   * and start searching for oldest connection with same or lower priority than mprio.
+   * We want to find the connections with the lowest possible prio, and among
+   * these the one with the longest inactivity time.
+   */
+  mprio--;
+
   inactivity = 0;
   inactive = NULL;
   for (pcb = tcp_active_pcbs; pcb != NULL; pcb = pcb->next) {
-    if (pcb->prio <= mprio &&
-        (u32_t)(tcp_ticks - pcb->tmr) >= inactivity) {
+        /* lower prio is always a kill candidate */
+    if ((pcb->prio < mprio) ||
+        /* longer inactivity is also a kill candidate */
+        ((pcb->prio == mprio) && ((u32_t)(tcp_ticks - pcb->tmr) >= inactivity))) {
       inactivity = tcp_ticks - pcb->tmr;
-      inactive = pcb;
-      mprio = pcb->prio;
+      inactive   = pcb;
+      mprio      = pcb->prio;
     }
   }
   if (inactive != NULL) {
@@ -1715,6 +1723,28 @@ tcp_kill_timewait(void)
   }
 }
 
+/* Called when allocating a pcb fails.
+ * In this case, we want to handle all pcbs that want to close first: if we can
+ * now send the FIN (which failed before), the pcb might be in a state that is
+ * OK for us to now free it.
+ */
+static void
+tcp_handle_closepend(void)
+{
+  struct tcp_pcb *pcb = tcp_active_pcbs;
+
+  while (pcb != NULL) {
+    struct tcp_pcb *next = pcb->next;
+    /* send pending FIN */
+    if (pcb->flags & TF_CLOSEPEND) {
+      LWIP_DEBUGF(TCP_DEBUG, ("tcp_handle_closepend: pending FIN\n"));
+      tcp_clear_flags(pcb, TF_CLOSEPEND);
+      tcp_close_shutdown_fin(pcb);
+    }
+    pcb = next;
+  }
+}
+
 /**
  * Allocate a new tcp_pcb structure.
  *
@@ -1739,6 +1769,9 @@ tcp_alloc(u8_t prio)
 
   pcb = (struct tcp_pcb *)memp_malloc(MEMP_TCP_PCB);
   if (pcb == NULL) {
+    /* Try to send FIN for all pcbs stuck in TF_CLOSEPEND first */
+    tcp_handle_closepend();
+
     /* Try killing oldest connection in TIME-WAIT. */
     LWIP_DEBUGF(TCP_DEBUG, ("tcp_alloc: killing off oldest TIME-WAIT connection\n"));
     tcp_kill_timewait();
@@ -1757,8 +1790,8 @@ tcp_alloc(u8_t prio)
         /* Try to allocate a tcp_pcb again. */
         pcb = (struct tcp_pcb *)memp_malloc(MEMP_TCP_PCB);
         if (pcb == NULL) {
-          /* Try killing active connections with lower priority than the new one. */
-          LWIP_DEBUGF(TCP_DEBUG, ("tcp_alloc: killing connection with prio lower than %d\n", prio));
+          /* Try killing oldest active connection with lower priority than the new one. */
+          LWIP_DEBUGF(TCP_DEBUG, ("tcp_alloc: killing oldest connection with prio lower than %d\n", prio));
           tcp_kill_prio(prio);
           /* Try to allocate a tcp_pcb again. */
           pcb = (struct tcp_pcb *)memp_malloc(MEMP_TCP_PCB);
@@ -2206,7 +2239,7 @@ tcp_netif_ip_addr_changed_pcblist(const ip_addr_t *old_addr, struct tcp_pcb *pcb
 void
 tcp_netif_ip_addr_changed(const ip_addr_t *old_addr, const ip_addr_t *new_addr)
 {
-  struct tcp_pcb_listen *lpcb, *next;
+  struct tcp_pcb_listen *lpcb;
 
   if (!ip_addr_isany(old_addr)) {
     tcp_netif_ip_addr_changed_pcblist(old_addr, tcp_active_pcbs);
@@ -2214,8 +2247,7 @@ tcp_netif_ip_addr_changed(const ip_addr_t *old_addr, const ip_addr_t *new_addr)
 
     if (!ip_addr_isany(new_addr)) {
       /* PCB bound to current local interface address? */
-      for (lpcb = tcp_listen_pcbs.listen_pcbs; lpcb != NULL; lpcb = next) {
-        next = lpcb->next;
+      for (lpcb = tcp_listen_pcbs.listen_pcbs; lpcb != NULL; lpcb = lpcb->next) {
         /* PCB bound to current local interface address? */
         if (ip_addr_cmp(&lpcb->local_ip, old_addr)) {
           /* The PCB is listening to the old ipaddr and
