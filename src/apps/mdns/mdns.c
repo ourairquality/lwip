@@ -527,6 +527,7 @@ mdns_build_reverse_v6_domain(struct mdns_domain *domain, const ip6_addr_t *addr)
 
   LWIP_UNUSED_ARG(res);
   const u8_t *ptr;
+  LWIP_UNUSED_ARG(res);
   if (!domain || !addr) {
     return ERR_ARG;
   }

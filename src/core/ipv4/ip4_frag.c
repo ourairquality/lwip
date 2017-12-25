@@ -491,14 +491,12 @@ ip_reass_chain_frag_into_datagram_and_validate(struct ip_reassdata *ipr, struct 
   }
   /* If we come here, not all fragments were received, yet! */
   return IP_REASS_VALIDATE_PBUF_QUEUED; /* not yet valid! */
-#if IP_REASS_CHECK_OVERLAP
 freepbuf:
   clen = pbuf_clen(new_p);
   LWIP_ASSERT("ip_reass_pbufcount >= clen", ip_reass_pbufcount >= clen);
   ip_reass_pbufcount = (u16_t)(ip_reass_pbufcount - clen);
   pbuf_free(new_p);
   return IP_REASS_VALIDATE_PBUF_DROPPED;
-#endif /* IP_REASS_CHECK_OVERLAP */
 }
 
 /**
@@ -524,7 +522,7 @@ ip4_reass(struct pbuf *p)
 
   fraghdr = (struct ip_hdr *)p->payload;
 
-  if ((IPH_HL(fraghdr) * 4) != IP_HLEN) {
+  if (IPH_HL_BYTES(fraghdr) != IP_HLEN) {
     LWIP_DEBUGF(IP_REASS_DEBUG, ("ip4_reass: IP options currently not supported!\n"));
     IPFRAG_STATS_INC(ip_frag.err);
     goto nullreturn;
