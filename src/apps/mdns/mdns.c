@@ -1520,6 +1520,23 @@ mdns_announce(struct netif *netif, const ip_addr_t *destination)
 }
 
 /**
+ * Send unsolicited answer containing all our known data
+ * @param netif The network interface to send on
+ */
+void
+mdns_resp_announce(struct netif *netif)
+{
+    printf("mdns_resp_announce\n");
+  /* Announce on IPv6 and IPv4 */
+#if LWIP_IPV6
+  mdns_announce(netif, IP6_ADDR_ANY);
+#endif
+#if LWIP_IPV4
+  mdns_announce(netif, IP4_ADDR_ANY);
+#endif
+}
+
+/**
  * Handle question MDNS packet
  * 1. Parse all questions and set bits what answers to send
  * 2. Clear pending answers if known answers are supplied
@@ -1855,13 +1872,7 @@ mdns_resp_netif_settings_changed(struct netif *netif)
     return;
   }
 
-  /* Announce on IPv6 and IPv4 */
-#if LWIP_IPV6
-  mdns_announce(netif, IP6_ADDR_ANY);
-#endif
-#if LWIP_IPV4
-  mdns_announce(netif, IP4_ADDR_ANY);
-#endif
+  mdns_resp_announce(netif);
 }
 
 #if LWIP_NETIF_EXT_STATUS_CALLBACK
@@ -1943,7 +1954,6 @@ mdns_resp_add_netif(struct netif *netif, const char *hostname, u32_t dns_ttl)
   }
 #endif
 
-  mdns_resp_netif_settings_changed(netif);
   return ERR_OK;
 
 cleanup:
@@ -2041,13 +2051,6 @@ mdns_resp_add_service(struct netif *netif, const char *name, const char *service
 
   mdns->services[slot] = srv;
 
-  /* Announce on IPv6 and IPv4 */
-#if LWIP_IPV6
-  mdns_announce(netif, IP6_ADDR_ANY);
-#endif
-#if LWIP_IPV4
-  mdns_announce(netif, IP4_ADDR_ANY);
-#endif
   return slot;
 }
 

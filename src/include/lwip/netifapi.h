@@ -152,6 +152,16 @@ err_t netifapi_netif_index_to_name(u8_t index, char *name);
   */
 #define netifapi_autoip_stop(n)       netifapi_netif_common(n, NULL, autoip_stop)
 
+/**
+ * @defgroup netifapi_mdns_resp
+ * @ingroup netifapi
+ * To be called from non-TCPIP threads
+ */
+/** @ingroup netifapi_mdns_resp
+  * @see mdns_resp_announce()
+  */
+#define netifapi_mdns_resp_announce(n)   netifapi_netif_common(n, NULL, mdns_resp_announce)
+
 #ifdef __cplusplus
 }
 #endif
