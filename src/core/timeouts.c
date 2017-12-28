@@ -237,8 +237,8 @@ sys_timeout(u32_t msecs, sys_timeout_handler handler, void *arg)
     return;
   }
 
-  if (next_timeout->time > msecs) {
-    next_timeout->time -= msecs;
+  if (next_timeout->time > timeout->time) {
+    next_timeout->time -= timeout->time;
     timeout->next = next_timeout;
     next_timeout = timeout;
   } else {
@@ -247,12 +247,6 @@ sys_timeout(u32_t msecs, sys_timeout_handler handler, void *arg)
       if (t->next == NULL || t->next->time > timeout->time) {
         if (t->next != NULL) {
           t->next->time -= timeout->time;
-        } else if (timeout->time > msecs) {
-          /* If this is the case, 'timeouts_last_time' and 'now' differs too much.
-             This can be due to sys_check_timeouts() not being called at the right
-             times, but also when stopping in a breakpoint. Anyway, let's assume
-             this is not wanted, so add the first timer's time instead of 'diff' */
-          timeout->time = msecs + next_timeout->time;
         }
         timeout->next = t->next;
         t->next = timeout;
