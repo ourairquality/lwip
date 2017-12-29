@@ -1526,7 +1526,6 @@ mdns_announce(struct netif *netif, const ip_addr_t *destination)
 void
 mdns_resp_announce(struct netif *netif)
 {
-    printf("mdns_resp_announce\n");
   /* Announce on IPv6 and IPv4 */
 #if LWIP_IPV6
   mdns_announce(netif, IP6_ADDR_ANY);
