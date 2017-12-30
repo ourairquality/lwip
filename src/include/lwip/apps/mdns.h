@@ -68,6 +68,8 @@ err_t mdns_resp_add_service_txtitem(struct mdns_service *service, const char *tx
 
 void mdns_resp_netif_settings_changed(struct netif *netif);
 
+void mdns_resp_announce(struct netif *netif);
+
 #endif /* LWIP_MDNS_RESPONDER */
 
 #endif /* LWIP_HDR_APPS_MDNS_H */

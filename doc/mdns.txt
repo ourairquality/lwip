@@ -29,9 +29,6 @@ MDNS with IPv4 requires LWIP_IGMP = 1, and preferably LWIP_AUTOIP = 1.
 MDNS with IPv6 requires LWIP_IPV6_MLD = 1, and that a link-local address is
 generated.
 
-The MDNS code puts its structs on the stack where suitable to reduce dynamic
-memory allocation. It may use up to 1kB of stack.
-
 MDNS (like other apps) needs a strncasecmp() implementation. If you have one, define
 'lwip_strnicmp' to it. Otherwise the code will provide an implementation
 for you.
