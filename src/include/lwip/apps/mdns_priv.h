@@ -58,6 +58,8 @@ struct mdns_domain {
   u8_t skip_compression;
 };
 
+struct mdns_domain *mdns_domain_alloc(void);
+void mdns_domain_free(struct mdns_domain *domain);
 err_t mdns_domain_add_label(struct mdns_domain *domain, const char *label, u8_t len);
 u16_t mdns_readname(struct pbuf *p, u16_t offset, struct mdns_domain **domain);
 int mdns_domain_eq(struct mdns_domain *a, struct mdns_domain *b);

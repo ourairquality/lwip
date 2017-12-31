@@ -83,13 +83,6 @@ void mdns_resp_announce(struct netif *netif);
  */
 #define mdns_resp_netif_settings_changed(netif) mdns_resp_announce(netif)
 
-/** @ingroup mdns
- * To trigger announces from non-TCPIP threads
- * Be sure to \#include lwip/netifapi.h when using this macro
- * @see mdns_resp_announce()
- */
-#define mdnsapi_mdns_resp_announce(netif)   netifapi_netif_common(netif, NULL, mdns_resp_announce)
-
 #endif /* LWIP_MDNS_RESPONDER */
 
 #endif /* LWIP_HDR_APPS_MDNS_H */

@@ -40,7 +40,7 @@ START_TEST(readname_basic)
 {
   static const u8_t data[] = { 0x05, 'm', 'u', 'l', 't', 'i', 0x04, 'c', 'a', 's', 't', 0x00 };
   struct pbuf *p;
-  struct mdns_domain domain;
+  struct mdns_domain *domain;
   u16_t offset;
   LWIP_UNUSED_ARG(_i);
 
@@ -50,8 +50,8 @@ START_TEST(readname_basic)
   offset = mdns_readname(p, 0, &domain);
   pbuf_free(p);
   fail_unless(offset == sizeof(data));
-  fail_unless(domain.length == sizeof(data));
-  fail_if(memcmp(&domain.name, data, sizeof(data)));
+  fail_unless(domain->length == sizeof(data));
+  fail_if(memcmp(domain->name, data, sizeof(data)));
 }
 END_TEST
 
@@ -59,7 +59,7 @@ START_TEST(readname_anydata)
 {
   static const u8_t data[] = { 0x05, 0x00, 0xFF, 0x08, 0xc0, 0x0f, 0x04, 0x7f, 0x80, 0x82, 0x88, 0x00 };
   struct pbuf *p;
-  struct mdns_domain domain;
+  struct mdns_domain *domain;
   u16_t offset;
   LWIP_UNUSED_ARG(_i);
 
@@ -69,8 +69,8 @@ START_TEST(readname_anydata)
   offset = mdns_readname(p, 0, &domain);
   pbuf_free(p);
   fail_unless(offset == sizeof(data));
-  fail_unless(domain.length == sizeof(data));
-  fail_if(memcmp(&domain.name, data, sizeof(data)));
+  fail_unless(domain->length == sizeof(data));
+  fail_if(memcmp(domain->name, data, sizeof(data)));
 }
 END_TEST
 
@@ -78,7 +78,7 @@ START_TEST(readname_short_buf)
 {
   static const u8_t data[] = { 0x05, 'm', 'u', 'l', 't', 'i', 0x04, 'c', 'a' };
   struct pbuf *p;
-  struct mdns_domain domain;
+  struct mdns_domain *domain;
   u16_t offset;
   LWIP_UNUSED_ARG(_i);
 
@@ -103,7 +103,7 @@ START_TEST(readname_long_label)
       'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 0x00
   };
   struct pbuf *p;
-  struct mdns_domain domain;
+  struct mdns_domain *domain;
   u16_t offset;
   LWIP_UNUSED_ARG(_i);
 
@@ -159,7 +159,7 @@ START_TEST(readname_overflow)
       0x00
   };
   struct pbuf *p;
-  struct mdns_domain domain;
+  struct mdns_domain *domain;
   u16_t offset;
   LWIP_UNUSED_ARG(_i);
 
@@ -184,7 +184,7 @@ START_TEST(readname_jump_earlier)
       0x05, 'm', 'u', 'l', 't', 'i', 0x04, 'c', 'a', 's', 't', 0x05, 'l', 'o', 'c', 'a', 'l', 0x00
   };
   struct pbuf *p;
-  struct mdns_domain domain;
+  struct mdns_domain *domain;
   u16_t offset;
   LWIP_UNUSED_ARG(_i);
 
@@ -194,9 +194,9 @@ START_TEST(readname_jump_earlier)
   offset = mdns_readname(p, 20, &domain);
   pbuf_free(p);
   fail_unless(offset == sizeof(data));
-  fail_unless(domain.length == sizeof(fullname));
+  fail_unless(domain->length == sizeof(fullname));
 
-  fail_if(memcmp(&domain.name, fullname, sizeof(fullname)));
+  fail_if(memcmp(domain->name, fullname, sizeof(fullname)));
 }
 END_TEST
 
@@ -213,7 +213,7 @@ START_TEST(readname_jump_earlier_jump)
       0x05, 'm', 'u', 'l', 't', 'i', 0x04, 'c', 'a', 's', 't', 0x00
   };
   struct pbuf *p;
-  struct mdns_domain domain;
+  struct mdns_domain *domain;
   u16_t offset;
   LWIP_UNUSED_ARG(_i);
 
@@ -223,9 +223,9 @@ START_TEST(readname_jump_earlier_jump)
   offset = mdns_readname(p, 0x18, &domain);
   pbuf_free(p);
   fail_unless(offset == sizeof(data));
-  fail_unless(domain.length == sizeof(fullname));
+  fail_unless(domain->length == sizeof(fullname));
 
-  fail_if(memcmp(&domain.name, fullname, sizeof(fullname)));
+  fail_if(memcmp(domain->name, fullname, sizeof(fullname)));
 }
 END_TEST
 
@@ -247,7 +247,7 @@ START_TEST(readname_jump_maxdepth)
       0x04, 'n', 'a', 'm', 'e', 0x00
   };
   struct pbuf *p;
-  struct mdns_domain domain;
+  struct mdns_domain *domain;
   u16_t offset;
   LWIP_UNUSED_ARG(_i);
 
@@ -257,9 +257,9 @@ START_TEST(readname_jump_maxdepth)
   offset = mdns_readname(p, 0x30, &domain);
   pbuf_free(p);
   fail_unless(offset == sizeof(data));
-  fail_unless(domain.length == sizeof(fullname));
+  fail_unless(domain->length == sizeof(fullname));
 
-  fail_if(memcmp(&domain.name, fullname, sizeof(fullname)));
+  fail_if(memcmp(domain->name, fullname, sizeof(fullname)));
 }
 END_TEST
 
@@ -273,7 +273,7 @@ START_TEST(readname_jump_later)
       0x05, 'm', 'u', 'l', 't', 'i', 0x04, 'c', 'a', 's', 't', 0x05, 'l', 'o', 'c', 'a', 'l', 0x00
   };
   struct pbuf *p;
-  struct mdns_domain domain;
+  struct mdns_domain *domain;
   u16_t offset;
   LWIP_UNUSED_ARG(_i);
 
@@ -283,9 +283,9 @@ START_TEST(readname_jump_later)
   offset = mdns_readname(p, 0, &domain);
   pbuf_free(p);
   fail_unless(offset == 13);
-  fail_unless(domain.length == sizeof(fullname));
+  fail_unless(domain->length == sizeof(fullname));
 
-  fail_if(memcmp(&domain.name, fullname, sizeof(fullname)));
+  fail_if(memcmp(domain->name, fullname, sizeof(fullname)));
 }
 END_TEST
 
@@ -295,7 +295,7 @@ START_TEST(readname_half_jump)
       0x05, 'm', 'u', 'l', 't', 'i', 0x04, 'c', 'a', 's', 't', 0xc0
   };
   struct pbuf *p;
-  struct mdns_domain domain;
+  struct mdns_domain *domain;
   u16_t offset;
   LWIP_UNUSED_ARG(_i);
 
@@ -314,7 +314,7 @@ START_TEST(readname_jump_toolong)
       0x05, 'm', 'u', 'l', 't', 'i', 0x04, 'c', 'a', 's', 't', 0xc2, 0x10, 0x00, 0x01, 0x40
   };
   struct pbuf *p;
-  struct mdns_domain domain;
+  struct mdns_domain *domain;
   u16_t offset;
   LWIP_UNUSED_ARG(_i);
 
@@ -334,7 +334,7 @@ START_TEST(readname_jump_loop_label)
       /* 10 */ 0x05, 'm', 'u', 'l', 't', 'i', 0x04, 'c', 'a', 's', 't', 0xc0, 0x10
   };
   struct pbuf *p;
-  struct mdns_domain domain;
+  struct mdns_domain *domain;
   u16_t offset;
   LWIP_UNUSED_ARG(_i);
 
@@ -354,7 +354,7 @@ START_TEST(readname_jump_loop_jump)
       /* 10 */ 0x05, 'm', 'u', 'l', 't', 'i', 0x04, 'c', 'a', 's', 't', 0xc0, 0x15
   };
   struct pbuf *p;
-  struct mdns_domain domain;
+  struct mdns_domain *domain;
   u16_t offset;
   LWIP_UNUSED_ARG(_i);
 
@@ -382,7 +382,7 @@ START_TEST(add_label_basic)
   res = mdns_domain_add_label(&domain, NULL, 0);
   fail_unless(res == ERR_OK);
   fail_unless(domain.length == sizeof(data));
-  fail_if(memcmp(&domain.name, data, sizeof(data)));
+  fail_if(memcmp(domain.name, data, sizeof(data)));
 }
 END_TEST
 
@@ -567,25 +567,27 @@ END_TEST
 
 START_TEST(domain_eq_length)
 {
-  struct mdns_domain domain1, domain2;
+  struct mdns_domain *domain1, *domain2;
   err_t res;
   LWIP_UNUSED_ARG(_i);
 
-  memset(&domain1, 0, sizeof(domain1));
-  memset(domain1.name, 0xAA, sizeof(MDNS_DOMAIN_MAXLEN));
-  res = mdns_domain_add_label(&domain1, "multi", 5);
+  domain1 = mdns_domain_alloc();
+  domain1->name = (u8_t *)mem_malloc(MDNS_DOMAIN_MAXLEN);
+  memset(domain1->name, 0xAA, MDNS_DOMAIN_MAXLEN);
+  res = mdns_domain_add_label(domain1, "multi", 5);
   fail_unless(res == ERR_OK);
-  res = mdns_domain_add_label(&domain1, "cast", 4);
-  fail_unless(res == ERR_OK);
-
-  memset(&domain2, 0, sizeof(domain2));
-  memset(domain2.name, 0xBB, sizeof(MDNS_DOMAIN_MAXLEN));
-  res = mdns_domain_add_label(&domain2, "multi", 5);
-  fail_unless(res == ERR_OK);
-  res = mdns_domain_add_label(&domain2, "cast", 4);
+  res = mdns_domain_add_label(domain1, "cast", 4);
   fail_unless(res == ERR_OK);
 
-  fail_unless(mdns_domain_eq(&domain1, &domain2));
+  domain2 = mdns_domain_alloc();
+  domain2->name = (u8_t *)mem_malloc(MDNS_DOMAIN_MAXLEN);
+  memset(domain2->name, 0xBB, MDNS_DOMAIN_MAXLEN);
+  res = mdns_domain_add_label(domain2, "multi", 5);
+  fail_unless(res == ERR_OK);
+  res = mdns_domain_add_label(domain2, "cast", 4);
+  fail_unless(res == ERR_OK);
+
+  fail_unless(mdns_domain_eq(domain1, domain2));
 }
 END_TEST
 
