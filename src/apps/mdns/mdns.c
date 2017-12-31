@@ -63,6 +63,7 @@
 #include "lwip/mem.h"
 #include "lwip/prot/dns.h"
 #include "lwip/prot/iana.h"
+#include "lwip/timeouts.h"
 
 #include <string.h>
 
@@ -98,6 +99,15 @@ static const ip_addr_t v6group = DNS_MQUERY_IPV6_GROUP_INIT;
 #define NUM_DOMAIN_OFFSETS 10
 #define DOMAIN_JUMP_SIZE 2
 #define DOMAIN_JUMP 0xc000
+
+#if LWIP_TCPIP_CORE_LOCKING
+#include "lwip/tcpip.h"
+#define LWIP_MDNS_PROTECT()   LOCK_TCPIP_CORE()
+#define LWIP_MDNS_UNPROTECT() UNLOCK_TCPIP_CORE()
+#else /* LWIP_TCPIP_CORE_LOCKING */
+#define LWIP_MDNS_PROTECT()
+#define LWIP_MDNS_UNPROTECT()
+#endif /* LWIP_TCPIP_CORE_LOCKING */
 
 static u8_t mdns_netif_client_id;
 static struct udp_pcb *mdns_pcb;
@@ -143,10 +153,7 @@ static const char *dnssd_protos[] = {
 static struct mdns_domain *
 mdns_domain_alloc()
 {
-  struct mdns_domain *domain;
-  domain = (struct mdns_domain *)mem_calloc(1, sizeof(struct mdns_domain));
-  memset(domain, 0, sizeof(struct mdns_domain));
-  return domain;
+  return mem_calloc(1, sizeof(struct mdns_domain));
 }
 
 void mdns_domain_free(struct mdns_domain *domain)
@@ -202,7 +209,7 @@ struct mdns_service {
 static struct mdns_service *
 mdns_service_alloc()
 {
-  return (struct mdns_service *)mem_calloc(1, sizeof(struct mdns_service));
+  return mem_calloc(1, sizeof(struct mdns_service));
 }
 
 static void
@@ -335,10 +342,7 @@ struct mdns_question {
 static struct mdns_question *
 mdns_question_alloc()
 {
-  struct mdns_question *q;
-  q = (struct mdns_question *)mem_calloc(1, sizeof(struct mdns_question));
-  memset(q, 0, sizeof(struct mdns_question));
-  return q;
+  return mem_calloc(1, sizeof(struct mdns_question));
 }
 
 static void
@@ -366,10 +370,7 @@ struct mdns_answer {
 static struct mdns_answer *
 mdns_answer_alloc()
 {
-  struct mdns_answer *q;
-  q = (struct mdns_answer *)mem_calloc(1, sizeof(struct mdns_answer));
-  memset(q, 0, sizeof(struct mdns_answer));
-  return q;
+  return mem_calloc(1, sizeof(struct mdns_answer));
 }
 
 static void
@@ -388,7 +389,6 @@ static err_t
 mdns_domain_add_label_base(struct mdns_domain *domain, u8_t len)
 {
   u16_t required;
-
   if (len > MDNS_LABEL_MAXLEN) {
     return ERR_VAL;
   }
@@ -1541,10 +1541,14 @@ mdns_add_txt_answer(struct mdns_outpacket *reply, u16_t cache_flush, struct mdns
 /**
  * Setup outpacket as a reply to the incoming packet
  */
-static void
-mdns_init_outpacket(struct mdns_outpacket *out, struct mdns_packet *in)
+static struct mdns_outpacket *
+mdns_alloc_outpacket(struct mdns_packet *in)
 {
-  memset(out, 0, sizeof(struct mdns_outpacket));
+  struct mdns_outpacket *out = mem_calloc(1, sizeof(struct mdns_outpacket));
+  if (out == NULL) {
+    return NULL;
+  }
+
   out->cache_flush = 1;
   out->netif = in->netif;
 
@@ -1566,6 +1570,8 @@ mdns_init_outpacket(struct mdns_outpacket *out, struct mdns_packet *in)
   if (in->recv_unicast) {
     out->unicast_reply = 1;
   }
+
+  return out;
 }
 
 /**
@@ -1741,14 +1747,12 @@ mdns_send_outpacket(struct mdns_outpacket *outpkt)
 
   if (outpkt->pbuf) {
     const ip_addr_t *mcast_destaddr;
-    struct dns_hdr *hdr;
 
     /* Write header */
-    hdr = (struct dns_hdr *)mem_calloc(1, sizeof(struct dns_hdr));
+    struct dns_hdr *hdr = mem_calloc(1, sizeof(struct dns_hdr));
     if (hdr == NULL) {
       goto cleanup;
     }
-    memset(hdr, 0, sizeof(struct dns_hdr));
     hdr->flags1 = DNS_FLAG1_RESPONSE | DNS_FLAG1_AUTHORATIVE;
     hdr->numanswers = lwip_htons(outpkt->answers);
     hdr->numextrarr = lwip_htons(outpkt->additional);
@@ -1795,16 +1799,13 @@ cleanup:
 static void
 mdns_announce(struct netif *netif, const ip_addr_t *destination)
 {
-  struct mdns_outpacket *announce;
   int i;
   struct mdns_host *mdns = NETIF_TO_HOST(netif);
+  struct mdns_outpacket *announce = mem_calloc(1, sizeof(struct mdns_outpacket));
 
-  announce = (struct mdns_outpacket *)mem_calloc(1, sizeof(struct mdns_outpacket));
   if (announce == NULL) {
     return;
   }
-
-  memset(announce, 0, sizeof(*announce));
   announce->netif = netif;
   announce->cache_flush = 1;
 #if LWIP_IPV4
@@ -1836,24 +1837,6 @@ mdns_announce(struct netif *netif, const ip_addr_t *destination)
 }
 
 /**
- * Send unsolicited answer containing all our known data
- * @param netif The network interface to send on
- */
-void
-mdns_resp_announce(struct netif *netif)
-{
-  /* Announce on IPv6 and IPv4 */
-#if LWIP_IPV6
-  mdns_announce(netif, IP6_ADDR_ANY);
-#endif
-#if LWIP_IPV4
-  if (!ip4_addr_isany_val(*netif_ip4_addr(netif))) {
-    mdns_announce(netif, IP4_ADDR_ANY);
-  }
-#endif
-}
-
-/**
  * Handle question MDNS packet
  * 1. Parse all questions and set bits what answers to send
  * 2. Clear pending answers if known answers are supplied
@@ -1869,12 +1852,10 @@ mdns_handle_question(struct mdns_packet *pkt)
   err_t res;
   struct mdns_host *mdns = NETIF_TO_HOST(pkt->netif);
 
-  reply = (struct mdns_outpacket *)mem_calloc(1, sizeof(struct mdns_outpacket));
+  reply = mdns_alloc_outpacket(pkt);
   if (reply == NULL) {
     return;
   }
-
-  mdns_init_outpacket(reply, pkt);
 
   while (pkt->questions_left) {
     struct mdns_question *q;
@@ -2163,7 +2144,7 @@ mdns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr,
 
   LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Received IPv%d MDNS packet, len %d\n", IP_IS_V6(addr) ? 6 : 4, p->tot_len));
 
-  hdr = (struct dns_hdr *)mem_calloc(1, sizeof(struct dns_hdr));
+  hdr = mem_calloc(1, sizeof(struct dns_hdr));
   if (hdr == NULL) {
     goto dealloc;
   }
@@ -2184,11 +2165,10 @@ mdns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr,
     goto dealloc;
   }
 
-  packet = (struct mdns_packet *)mem_calloc(1, sizeof(struct mdns_packet));
+  packet = mem_calloc(1, sizeof(struct mdns_packet));
   if (packet == NULL) {
     goto dealloc;
   }
-  memset(packet, 0, sizeof(*packet));
   SMEMCPY(&packet->source_addr, addr, sizeof(packet->source_addr));
   packet->source_port = port;
   packet->netif = recv_netif;
@@ -2228,26 +2208,6 @@ dealloc:
   pbuf_free(p);
 }
 
-/**
- * @ingroup mdns
- * Announce IP settings have changed on netif.
- * Call this in your callback registered by netif_set_status_callback().
- * No need to call this function when LWIP_NETIF_EXT_STATUS_CALLBACK==1,
- * this handled automatically for you.
- * @param netif The network interface where settings have changed.
- */
-void
-mdns_resp_netif_settings_changed(struct netif *netif)
-{
-  LWIP_ERROR("mdns_resp_netif_ip_changed: netif != NULL", (netif != NULL), return);
-
-  if (NETIF_TO_HOST(netif) == NULL) {
-    return;
-  }
-
-  mdns_resp_announce(netif);
-}
-
 #if LWIP_NETIF_EXT_STATUS_CALLBACK
 static void
 mdns_netif_ext_status_callback(struct netif *netif, netif_nsc_reason_t reason, const netif_ext_callback_args_t *args)
@@ -2262,13 +2222,13 @@ mdns_netif_ext_status_callback(struct netif *netif, netif_nsc_reason_t reason, c
   switch (reason) {
     case LWIP_NSC_STATUS_CHANGED:
       if (args->status_changed.state != 0) {
-        mdns_resp_netif_settings_changed(netif);
+        mdns_resp_announce(netif);
       }
       /* TODO: send goodbye message */
       break;
     case LWIP_NSC_LINK_CHANGED:
       if (args->link_changed.state != 0) {
-        mdns_resp_netif_settings_changed(netif);
+        mdns_resp_announce(netif);
       }
       break;
     case LWIP_NSC_IPV4_ADDRESS_CHANGED:  /* fall through */
@@ -2277,7 +2237,7 @@ mdns_netif_ext_status_callback(struct netif *netif, netif_nsc_reason_t reason, c
     case LWIP_NSC_IPV4_SETTINGS_CHANGED: /* fall through */
     case LWIP_NSC_IPV6_SET:              /* fall through */
     case LWIP_NSC_IPV6_ADDR_STATE_CHANGED:
-      mdns_resp_netif_settings_changed(netif);
+      mdns_resp_announce(netif);
       break;
     default:
       break;
@@ -2305,7 +2265,7 @@ mdns_resp_add_netif(struct netif *netif, const char *hostname, u32_t dns_ttl)
   LWIP_ERROR("mdns_resp_add_netif: Hostname too long", (strlen(hostname) <= MDNS_LABEL_MAXLEN), return ERR_VAL);
 
   LWIP_ASSERT("mdns_resp_add_netif: Double add", NETIF_TO_HOST(netif) == NULL);
-  mdns = (struct mdns_host *) mem_calloc(1, sizeof(struct mdns_host));
+  mdns = mem_calloc(1, sizeof(struct mdns_host));
   LWIP_ERROR("mdns_resp_add_netif: Alloc failed", (mdns != NULL), return ERR_MEM);
 
   netif_set_client_data(netif, mdns_netif_client_id, mdns);
@@ -2327,11 +2287,22 @@ mdns_resp_add_netif(struct netif *netif, const char *hostname, u32_t dns_ttl)
   }
 #endif
 
+  mdns_resp_announce(netif);
   return ERR_OK;
 
 cleanup:
   mdns_host_free(mdns);
   netif_set_client_data(netif, mdns_netif_client_id, NULL);
+  return res;
+}
+
+err_t
+mdnsapi_mdns_resp_add_netif(struct netif *netif, const char *hostname, u32_t dns_ttl)
+{
+  err_t res;
+  LWIP_MDNS_PROTECT();
+  res = mdns_resp_add_netif(netif, hostname, dns_ttl);
+  LWIP_MDNS_UNPROTECT();
   return res;
 }
 
@@ -2348,6 +2319,7 @@ mdns_resp_remove_netif(struct netif *netif)
   struct mdns_host *mdns;
 
   LWIP_ASSERT("mdns_resp_remove_netif: Null pointer", netif);
+
   mdns = NETIF_TO_HOST(netif);
   LWIP_ERROR("mdns_resp_remove_netif: Not an active netif", (mdns != NULL), return ERR_VAL);
 
@@ -2362,6 +2334,16 @@ mdns_resp_remove_netif(struct netif *netif)
   mdns_host_free(mdns);
   netif_set_client_data(netif, mdns_netif_client_id, NULL);
   return ERR_OK;
+}
+
+err_t
+mdnsapi_mdns_resp_remove_netif(struct netif *netif)
+{
+  err_t res;
+  LWIP_MDNS_PROTECT();
+  res = mdns_resp_remove_netif(netif);
+  LWIP_MDNS_UNPROTECT();
+  return res;
 }
 
 /**
@@ -2388,12 +2370,12 @@ mdns_resp_add_service(struct netif *netif, const char *name, const char *service
   struct mdns_host *mdns;
 
   LWIP_ASSERT("mdns_resp_add_service: netif != NULL", netif);
-  mdns = NETIF_TO_HOST(netif);
-  LWIP_ERROR("mdns_resp_add_service: Not an mdns netif", (mdns != NULL), return ERR_VAL);
-
   LWIP_ERROR("mdns_resp_add_service: Name too long", (strlen(name) <= MDNS_LABEL_MAXLEN), return ERR_VAL);
   LWIP_ERROR("mdns_resp_add_service: Service too long", (strlen(service) <= MDNS_LABEL_MAXLEN), return ERR_VAL);
   LWIP_ERROR("mdns_resp_add_service: Bad proto (need TCP or UDP)", (proto == DNSSD_PROTO_TCP || proto == DNSSD_PROTO_UDP), return ERR_VAL);
+
+  mdns = NETIF_TO_HOST(netif);
+  LWIP_ERROR("mdns_resp_add_service: Not an mdns netif", (mdns != NULL), return ERR_VAL);
 
   for (i = 0; i < MDNS_MAX_SERVICES; i++) {
     if (mdns->services[i] == NULL) {
@@ -2417,7 +2399,18 @@ mdns_resp_add_service(struct netif *netif, const char *name, const char *service
 
   mdns->services[slot] = srv;
 
+  mdns_resp_announce(netif);
   return slot;
+}
+
+s8_t
+mdnsapi_mdns_resp_add_service(struct netif *netif, const char *name, const char *service, enum mdns_sd_proto proto, u16_t port, u32_t dns_ttl, service_get_txt_fn_t txt_fn, void *txt_data)
+{
+  s8_t res;
+  LWIP_MDNS_PROTECT();
+  res = mdns_resp_add_service(netif, name, service, proto, port, dns_ttl, txt_fn, txt_data);
+  LWIP_MDNS_UNPROTECT();
+  return res;
 }
 
 /**
@@ -2442,6 +2435,16 @@ mdns_resp_del_service(struct netif *netif, s8_t slot)
   mdns->services[slot] = NULL;
   mdns_service_free(srv);
   return ERR_OK;
+}
+
+err_t
+mdnsapi_mdns_resp_del_service(struct netif *netif, s8_t slot)
+{
+  err_t res;
+  LWIP_MDNS_PROTECT();
+  res = mdns_resp_del_service(netif, slot);
+  LWIP_MDNS_UNPROTECT();
+  return res;
 }
 
 /**
@@ -2471,6 +2474,63 @@ mdns_resp_add_service_txtitem(struct mdns_service *service, const char *txt, u8_
   return mdns_domain_add_label(txtdata, txt, txt_len);
 }
 
+err_t
+mdnsapi_mdns_resp_add_service_txtitem(struct mdns_service *service, const char *txt, u8_t txt_len)
+{
+  err_t res;
+  LWIP_MDNS_PROTECT();
+  res = mdns_resp_add_service_txtitem(service, txt, txt_len);
+  LWIP_MDNS_UNPROTECT();
+  return res;
+}
+
+static volatile u8_t mdns_announce_pending;
+
+/**
+ * Timer callback to send unsolicited answer containing all known data
+ * @param netif The network interface to send on
+ */
+static void
+mdns_announce_callback(struct netif *netif)
+{
+  mdns_announce_pending = 0;
+
+  if (NETIF_TO_HOST(netif) == NULL) {
+    return;
+  }
+
+  /* Announce on IPv6 and IPv4 */
+#if LWIP_IPV6
+  mdns_announce(netif, IP6_ADDR_ANY);
+#endif
+#if LWIP_IPV4
+  if (!ip4_addr_isany_val(*netif_ip4_addr(netif))) {
+    mdns_announce(netif, IP4_ADDR_ANY);
+  }
+#endif
+}
+
+/**
+ * @ingroup mdns
+ * Queue unsolicited answer containing all our known data.
+ * For calling within the tcpip thread, core lock held.
+ * @param netif The network interface to send on
+ */
+void
+mdns_resp_announce(struct netif *netif)
+{
+  u8_t queued;
+
+  LWIP_ERROR("mdns_resp_announce: netif != NULL", (netif != NULL), return);
+
+  queued = mdns_announce_pending;
+  mdns_announce_pending = 1;
+
+  if (!queued) {
+    sys_timeout(50, (sys_timeout_handler)mdns_announce_callback, netif);
+  }
+}
+
 /**
  * @ingroup mdns
  * Initiate MDNS responder. Will open UDP sockets on port 5353
@@ -2496,6 +2556,14 @@ mdns_resp_init(void)
 
   /* register for netif events when started on first netif */
   netif_add_ext_callback(&netif_callback, mdns_netif_ext_status_callback);
+}
+
+void
+mdnsapi_mdns_resp_init(void)
+{
+  LWIP_MDNS_PROTECT();
+  mdns_resp_init();
+  LWIP_MDNS_UNPROTECT();
 }
 
 #endif /* LWIP_MDNS_RESPONDER */
