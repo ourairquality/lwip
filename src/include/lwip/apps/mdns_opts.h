@@ -67,6 +67,15 @@
 #endif
 
 /**
+ * LWIP_MDNS_RESPONDER_QUEUE_ANNOUNCEMENTS==1: Unsolicited announcements are
+ * queued and run from a timer callback.
+ */
+#ifndef LWIP_MDNS_RESPONDER_QUEUE_ANNOUNCEMENTS
+#define LWIP_MDNS_RESPONDER_QUEUE_ANNOUNCEMENTS     0
+#endif
+
+
+/**
  * @}
  */
 

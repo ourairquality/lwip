@@ -1588,20 +1588,10 @@ mdns_alloc_outpacket(struct mdns_packet *in)
 static void
 mdns_async_send_outpacket(void *arg)
 {
-  const ip_addr_t *mcast_destaddr;
   struct mdns_async_outpacket *outpkt = (struct mdns_async_outpacket *)arg;
   struct pbuf *p = outpkt->pbuf;
   /* Send delayed packet */
   LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Async sending packet len=%"U16_F"\n", p->tot_len));
-  if (IP_IS_V6_VAL(outpkt->dest_addr)) {
-#if LWIP_IPV6
-    mcast_destaddr = &v6group;
-#endif
-  } else {
-#if LWIP_IPV4
-    mcast_destaddr = &v4group;
-#endif
-  }
   udp_sendto_if(mdns_pcb, p, &outpkt->dest_addr, outpkt->dest_port, outpkt->netif);
   pbuf_free(p);
   outpkt->pbuf = NULL;
@@ -1818,7 +1808,7 @@ mdns_send_outpacket(struct mdns_outpacket *outpkt)
     if (outpkt->answers > 1) {
       struct mdns_async_outpacket *async_outpkt;
 
-      async_outpkt = mem_malloc(sizeof(struct mdns_async_outpacket));
+      async_outpkt = (struct mdns_async_outpacket *)mem_malloc(sizeof(struct mdns_async_outpacket));
       if (async_outpkt) {
         struct pbuf *p = outpkt->pbuf;
         u32_t msecs = 0;
@@ -2537,7 +2527,11 @@ mdns_resp_announce(struct netif *netif)
   mdns_announce_pending = 1;
 
   if (!queued) {
-    sys_timeout(50, (sys_timeout_handler)mdns_announce_callback, netif);
+#if LWIP_MDNS_RESPONDER_QUEUE_ANNOUNCEMENTS
+    sys_timeout(0, (sys_timeout_handler)mdns_announce_callback, netif);
+#else
+    mdns_announce_callback(netif);
+#endif
   }
 }
 
