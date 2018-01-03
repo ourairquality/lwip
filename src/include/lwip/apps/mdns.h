@@ -57,17 +57,12 @@ struct mdns_service;
 typedef void (*service_get_txt_fn_t)(struct mdns_service *service, void *txt_userdata);
 
 void mdns_resp_init(void);
-void mdnsapi_mdns_resp_init(void);
 
 err_t mdns_resp_add_netif(struct netif *netif, const char *hostname, u32_t dns_ttl);
-err_t mdnsapi_mdns_resp_add_netif(struct netif *netif, const char *hostname, u32_t dns_ttl);
 err_t mdns_resp_remove_netif(struct netif *netif);
-err_t mdnsapi_mdns_resp_remove_netif(struct netif *netif);
 
 s8_t  mdns_resp_add_service(struct netif *netif, const char *name, const char *service, enum mdns_sd_proto proto, u16_t port, u32_t dns_ttl, service_get_txt_fn_t txt_fn, void *txt_userdata);
-s8_t  mdnsapi_mdns_resp_add_service(struct netif *netif, const char *name, const char *service, enum mdns_sd_proto proto, u16_t port, u32_t dns_ttl, service_get_txt_fn_t txt_fn, void *txt_userdata);
 err_t mdns_resp_del_service(struct netif *netif, s8_t slot);
-err_t mdnsapi_mdns_resp_del_service(struct netif *netif, s8_t slot);
 
 err_t mdns_resp_add_service_txtitem(struct mdns_service *service, const char *txt, u8_t txt_len);
 
