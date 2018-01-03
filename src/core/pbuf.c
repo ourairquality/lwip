@@ -330,11 +330,12 @@ struct pbuf *
 pbuf_alloc_reference(void *payload, u16_t length, pbuf_type type)
 {
   struct pbuf *p;
-  LWIP_ASSERT("invalid pbuf_type", (type == PBUF_REF) || (type == PBUF_ROM)
 #ifdef ESP_OPEN_RTOS
-              || (type == (PBUF_ALLOC_FLAG_RX | PBUF_TYPE_ALLOC_SRC_MASK_ESP_RX))
+  LWIP_ASSERT("invalid pbuf_type", (type == PBUF_REF) || (type == PBUF_ROM) ||
+              (type == (PBUF_ALLOC_FLAG_RX | PBUF_TYPE_ALLOC_SRC_MASK_ESP_RX)));
+#else
+  LWIP_ASSERT("invalid pbuf_type", (type == PBUF_REF) || (type == PBUF_ROM));
 #endif
-              );
   /* only allocate memory for the pbuf structure */
   p = (struct pbuf *)memp_malloc(MEMP_PBUF);
   if (p == NULL) {
