@@ -315,44 +315,42 @@ sys_check_timeouts(void)
 {
   LWIP_ASSERT_CORE_LOCKED();
 
-  if (next_timeout) {
+  do {
     struct sys_timeo *tmptimeout;
     u32_t diff;
     sys_timeout_handler handler;
     void *arg;
-    u8_t had_one;
-    u32_t now;
 
-    now = sys_now();
-    /* this cares for wraparounds */
-    diff = now - timeouts_last_time;
-    do {
-      PBUF_CHECK_FREE_OOSEQ();
-      had_one = 0;
-      tmptimeout = next_timeout;
-      if (tmptimeout && (tmptimeout->time <= diff)) {
-        /* timeout has expired */
-        had_one = 1;
-        timeouts_last_time += tmptimeout->time;
-        diff -= tmptimeout->time;
-        next_timeout = tmptimeout->next;
-        handler = tmptimeout->h;
-        arg = tmptimeout->arg;
+    PBUF_CHECK_FREE_OOSEQ();
+
+    tmptimeout = next_timeout;
+    if (tmptimeout == NULL) {
+      return;
+    }
+    /* This cares for wraparounds */
+    diff = sys_now() - timeouts_last_time;
+    if (tmptimeout->time > diff) {
+      return;
+    }
+
+    /* Timeout has expired */
+    timeouts_last_time += tmptimeout->time;
+    next_timeout = tmptimeout->next;
+    handler = tmptimeout->h;
+    arg = tmptimeout->arg;
 #if LWIP_DEBUG_TIMERNAMES
-        if (handler != NULL) {
-          LWIP_DEBUGF(TIMERS_DEBUG, ("sct calling h=%s arg=%p\n",
-                                     tmptimeout->handler_name, arg));
-        }
+    if (handler != NULL) {
+      LWIP_DEBUGF(TIMERS_DEBUG, ("sct calling h=%s arg=%p\n",
+                                 tmptimeout->handler_name, arg));
+    }
 #endif /* LWIP_DEBUG_TIMERNAMES */
-        memp_free(MEMP_SYS_TIMEOUT, tmptimeout);
-        if (handler != NULL) {
-          handler(arg);
-        }
-        LWIP_TCPIP_THREAD_ALIVE();
-      }
-      /* repeat until all expired timers have been called */
-    } while (had_one);
-  }
+    memp_free(MEMP_SYS_TIMEOUT, tmptimeout);
+    if (handler != NULL) {
+      handler(arg);
+    }
+    LWIP_TCPIP_THREAD_ALIVE();
+    /* Repeat until all expired timers have been called */
+  } while (1);
 }
 
 /** Set back the timestamp of the last call to sys_check_timeouts()
