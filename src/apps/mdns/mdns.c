@@ -79,6 +79,30 @@
 #error "If you want to use MDNS, you have to define LWIP_UDP=1 in your lwipopts.h"
 #endif
 
+#if MEM_LIBC_MALLOC
+#define STRNDUP(s, n) strndup(s, n)
+#else
+#define STRNDUP(s, n) mem_strndup(s, n)
+char * mem_strndup(const char *s, size_t n);
+char *
+mem_strndup(const char *s, size_t n)
+{
+  size_t len = 0;
+  char *copy;
+
+  while (n-- > 0 && s[len]) {
+    len++;
+  }
+
+  copy = (char *) mem_malloc(len + 1);
+  if (copy) {
+    memcpy(copy, s, len);
+    copy[len] = '\0';
+  }
+  return copy;
+}
+#endif
+
 #if LWIP_IPV4
 #include "lwip/igmp.h"
 /* IPv4 multicast group 224.0.0.251 */
@@ -2326,7 +2350,7 @@ mdns_resp_add_netif(struct netif *netif, const char *hostname, u32_t dns_ttl)
 
   netif_set_client_data(netif, mdns_netif_client_id, mdns);
 
-  mdns->name = strndup(hostname, MDNS_LABEL_MAXLEN);
+  mdns->name = STRNDUP(hostname, MDNS_LABEL_MAXLEN);
   if (mdns->name == NULL) {
     res = ERR_MEM;
     goto cleanup;
@@ -2430,12 +2454,12 @@ mdns_resp_add_service(struct netif *netif, const char *name, const char *service
   srv = mdns_service_alloc();
   LWIP_ERROR("mdns_resp_add_service: Alloc failed", (srv != NULL), return ERR_MEM);
 
-  srv->name = strndup(name, MDNS_LABEL_MAXLEN);
+  srv->name = STRNDUP(name, MDNS_LABEL_MAXLEN);
   if (srv->name == NULL) {
     mem_free(srv);
     return ERR_MEM;
   }
-  srv->service = strndup(service, MDNS_LABEL_MAXLEN);
+  srv->service = STRNDUP(service, MDNS_LABEL_MAXLEN);
   if (srv->service == NULL) {
     mem_free(srv->name);
     mem_free(srv);
