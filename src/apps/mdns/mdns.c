@@ -1609,6 +1609,8 @@ mdns_alloc_outpacket(struct mdns_packet *in)
   return out;
 }
 
+static struct mdns_async_outpacket *mdns_async_outpacket;
+
 /**
  * Send delayed response
  * @param arg An allocated mdns_async_outpacket structure
@@ -1620,10 +1622,26 @@ mdns_async_send_outpacket(void *arg)
   struct pbuf *p = outpkt->pbuf;
   /* Send delayed packet */
   LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Async sending packet len=%"U16_F"\n", p->tot_len));
+  LWIP_ASSERT("mdns_async_send_outpacket: unexpected outpacket", outpkt == mdns_async_outpacket);
+  mdns_async_outpacket = NULL;
   udp_sendto_if(mdns_pcb, p, &outpkt->dest_addr, outpkt->dest_port, outpkt->netif);
   pbuf_free(p);
   outpkt->pbuf = NULL;
   mem_free(arg);
+}
+
+/**
+ * Flush delayed response now.
+ */
+static void
+mdns_flush_async_outpacket(void)
+{
+  if (mdns_async_outpacket) {
+    LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Flush async packet len=%"U16_F"\n", mdns_async_outpacket->pbuf->tot_len));
+    sys_untimeout(mdns_async_send_outpacket, mdns_async_outpacket);
+    mdns_async_send_outpacket(mdns_async_outpacket);
+    mdns_async_outpacket = NULL;
+  }
 }
 
 /**
@@ -1640,6 +1658,10 @@ mdns_send_outpacket(struct mdns_outpacket *outpkt, int now)
   err_t res;
   int i;
   struct mdns_host *mdns = NETIF_TO_HOST(outpkt->netif);
+
+  /* Flush a pending outpacket. This keeps them in order, and also
+   * limits the resource allocated. */
+  mdns_flush_async_outpacket();
 
   /* Write answers to host questions */
 #if LWIP_IPV4
@@ -1852,6 +1874,8 @@ mdns_send_outpacket(struct mdns_outpacket *outpkt, int now)
         ip_addr_copy(async_outpkt->dest_addr, outpkt->dest_addr);
 
         LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Wait sending packet wait=%"U32_F", len=%"U16_F"\n", msecs, p->tot_len));
+        LWIP_ASSERT("mdns_send_outpacket: outpacket", mdns_async_outpacket == NULL);
+        mdns_async_outpacket = async_outpkt;
         sys_timeout(msecs, mdns_async_send_outpacket, async_outpkt);
       }
     } else {
@@ -1879,6 +1903,7 @@ mdns_announce(struct netif *netif, const ip_addr_t *destination)
   int i;
   struct mdns_host *mdns = NETIF_TO_HOST(netif);
   struct mdns_outpacket *announce;
+
   announce = (struct mdns_outpacket *)mem_calloc(1, sizeof(struct mdns_outpacket));
 
   if (announce == NULL) {
@@ -2575,11 +2600,7 @@ mdns_resp_announce(struct netif *netif)
 
   if (!queued) {
 #if LWIP_MDNS_RESPONDER_QUEUE_ANNOUNCEMENTS
-    u32_t msecs = 0;
-    while (msecs < 20) {
-      msecs = LWIP_RAND() & 127;
-    }
-    sys_timeout(msecs, (sys_timeout_handler)mdns_announce_callback, netif);
+    sys_timeout(0, (sys_timeout_handler)mdns_announce_callback, netif);
 #else
     mdns_announce_callback(netif);
 #endif
@@ -2595,7 +2616,8 @@ mdns_resp_init(void)
 {
   err_t res;
 
-  LWIP_ASSERT_CORE_LOCKED();
+  /* LWIP_ASSERT_CORE_LOCKED(); is checked by udp_new() */
+
   mdns_pcb = udp_new_ip_type(IPADDR_TYPE_ANY);
   LWIP_ASSERT("Failed to allocate pcb", mdns_pcb != NULL);
 #if LWIP_MULTICAST_TX_OPTIONS

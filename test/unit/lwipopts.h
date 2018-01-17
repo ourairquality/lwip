@@ -32,6 +32,8 @@
 #ifndef LWIP_HDR_LWIPOPTS_H
 #define LWIP_HDR_LWIPOPTS_H
 
+#define LWIP_TESTMODE                   1
+
 #define LWIP_IPV6                       1
 
 /* We link to special sys_arch.c (for basic non-waiting API layers unit tests) */
@@ -65,10 +67,13 @@
 /* Minimal changes to opt.h required for etharp unit tests: */
 #define ETHARP_SUPPORT_STATIC_ENTRIES   1
 
-#define MEMP_NUM_SYS_TIMEOUT            (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 1)
+#define MEMP_NUM_SYS_TIMEOUT            (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 8)
 
 /* MIB2 stats are required to check IPv4 reassembly results */
 #define MIB2_STATS                      1
+
+/* netif tests want to test this, so enable: */
+#define LWIP_NETIF_EXT_STATUS_CALLBACK  1
 
 /* Check lwip_stats.mem.illegal instead of asserting */
 #define LWIP_MEM_ILLEGAL_FREE(msg)      /* to nothing */

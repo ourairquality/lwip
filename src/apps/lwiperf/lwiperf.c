@@ -434,13 +434,13 @@ lwiperf_tcp_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err)
     if (p->tot_len < sizeof(lwiperf_settings_t)) {
       lwiperf_tcp_close(conn, LWIPERF_TCP_ABORTED_LOCAL_DATAERROR);
       pbuf_free(p);
-      return ERR_VAL;
+      return ERR_OK;
     }
     if (!conn->have_settings_buf) {
       if (pbuf_copy_partial(p, &conn->settings, sizeof(lwiperf_settings_t), 0) != sizeof(lwiperf_settings_t)) {
         lwiperf_tcp_close(conn, LWIPERF_TCP_ABORTED_LOCAL);
         pbuf_free(p);
-        return ERR_VAL;
+        return ERR_OK;
       }
       conn->have_settings_buf = 1;
       if ((conn->settings.flags & PP_HTONL(LWIPERF_FLAGS_ANSWER_TEST | LWIPERF_FLAGS_ANSWER_NOW)) ==
@@ -450,14 +450,14 @@ lwiperf_tcp_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err)
         if (err2 != ERR_OK) {
           lwiperf_tcp_close(conn, LWIPERF_TCP_ABORTED_LOCAL_TXERROR);
           pbuf_free(p);
-          return err2;
+          return ERR_OK;
         }
       }
     } else {
       if (pbuf_memcmp(p, 0, &conn->settings, sizeof(lwiperf_settings_t)) != 0) {
         lwiperf_tcp_close(conn, LWIPERF_TCP_ABORTED_LOCAL_DATAERROR);
         pbuf_free(p);
-        return ERR_VAL;
+        return ERR_OK;
       }
     }
     conn->bytes_transferred += sizeof(lwiperf_settings_t);
@@ -488,7 +488,7 @@ lwiperf_tcp_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err)
       } else {
         lwiperf_tcp_close(conn, LWIPERF_TCP_ABORTED_LOCAL_DATAERROR);
         pbuf_free(p);
-        return ERR_VAL;
+        return ERR_OK;
       }
     }
 #endif
@@ -594,6 +594,8 @@ lwiperf_start_tcp_server(const ip_addr_t *local_addr, u16_t local_port,
   struct tcp_pcb *pcb;
   lwiperf_state_tcp_t *s;
 
+  LWIP_ASSERT_CORE_LOCKED();
+
   if (local_addr == NULL) {
     return NULL;
   }
@@ -639,6 +641,8 @@ void
 lwiperf_abort(void *lwiperf_session)
 {
   lwiperf_state_base_t *i, *dealloc, *last = NULL;
+
+  LWIP_ASSERT_CORE_LOCKED();
 
   for (i = lwiperf_all_connections; i != NULL; ) {
     if ((i == lwiperf_session) || (i->related_server_state == lwiperf_session)) {

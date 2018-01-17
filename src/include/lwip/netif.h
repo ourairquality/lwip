@@ -382,7 +382,7 @@ struct netif {
 #else /* LWIP_SINGLE_NETIF */
 /** The list of network interfaces. */
 extern struct netif *netif_list;
-#define NETIF_FOREACH(netif) for (netif = netif_list; netif != NULL; netif = netif->next)
+#define NETIF_FOREACH(netif) for ((netif) = netif_list; (netif) != NULL; (netif) = (netif)->next)
 #endif /* LWIP_SINGLE_NETIF */
 /** The default network interface. */
 extern struct netif *netif_default;
@@ -537,28 +537,30 @@ struct netif* netif_get_by_index(u8_t idx);
  */
 typedef enum
 {
+  /* used for initialization only */
+  LWIP_NSC_NONE = 0,
   /** netif was added. arg: NULL. Called AFTER netif was added. */
-  LWIP_NSC_NETIF_ADDED,
+  LWIP_NSC_NETIF_ADDED = 0x1,
   /** netif was removed. arg: NULL. Called BEFORE netif is removed. */
-  LWIP_NSC_NETIF_REMOVED,
+  LWIP_NSC_NETIF_REMOVED = 0x2,
   /** link changed */
-  LWIP_NSC_LINK_CHANGED,
+  LWIP_NSC_LINK_CHANGED = 0x4,
   /** netif administrative status changed.\n
    * up is called AFTER netif is set up.\n
    * down is called BEFORE the netif is actually set down. */
-  LWIP_NSC_STATUS_CHANGED,
+  LWIP_NSC_STATUS_CHANGED = 0x8,
   /** IPv4 address has changed */
-  LWIP_NSC_IPV4_ADDRESS_CHANGED,
+  LWIP_NSC_IPV4_ADDRESS_CHANGED = 0x10,
   /** IPv4 gateway has changed */
-  LWIP_NSC_IPV4_GATEWAY_CHANGED,
+  LWIP_NSC_IPV4_GATEWAY_CHANGED = 0x20,
   /** IPv4 netmask has changed */
-  LWIP_NSC_IPV4_NETMASK_CHANGED,
-  /** called AFTER IPv4 address/gateway/netmask changes have been applied. arg: NULL */
-  LWIP_NSC_IPV4_SETTINGS_CHANGED,
+  LWIP_NSC_IPV4_NETMASK_CHANGED = 0x40,
+  /** called AFTER IPv4 address/gateway/netmask changes have been applied */
+  LWIP_NSC_IPV4_SETTINGS_CHANGED = 0x80,
   /** IPv6 address was added */
-  LWIP_NSC_IPV6_SET,
+  LWIP_NSC_IPV6_SET = 0x100,
   /** IPv6 address state has changed */
-  LWIP_NSC_IPV6_ADDR_STATE_CHANGED
+  LWIP_NSC_IPV6_ADDR_STATE_CHANGED = 0x200
 } netif_nsc_reason_t;
 
 /** @ingroup netif
@@ -578,24 +580,14 @@ typedef union
     /** 1: up; 0: down */
     u8_t state;
   } status_changed;
-  /** Args to LWIP_NSC_IPV4_ADDRESS_CHANGED callback */
+  /** Args to LWIP_NSC_IPV4_ADDRESS_CHANGED|LWIP_NSC_IPV4_GATEWAY_CHANGED|LWIP_NSC_IPV4_NETMASK_CHANGED|LWIP_NSC_IPV4_SETTINGS_CHANGED callback */
   struct ipv4_changed_s
   {
     /** Old IPv4 address */
     const ip_addr_t* old_address;
+    const ip_addr_t* old_netmask;
+    const ip_addr_t* old_gw;
   } ipv4_changed;
-  /** Args to LWIP_NSC_IPV4_GATEWAY_CHANGED callback */
-  struct ipv4_gw_changed_s
-  {
-    /** Old IPv4 gateway */
-    const ip_addr_t* old_address;
-  } ipv4_gw_changed;
-  /** Args to LWIP_NSC_IPV4_NETMASK_CHANGED callback */
-  struct ipv4_nm_changed_s
-  {
-    /** Old IPv4 netmask */
-    const ip_addr_t* old_address;
-  } ipv4_nm_changed;
   /** Args to LWIP_NSC_IPV6_SET callback */
   struct ipv6_set_s
   {
@@ -634,10 +626,12 @@ typedef struct netif_ext_callback
 
 #define NETIF_DECLARE_EXT_CALLBACK(name) static netif_ext_callback_t name;
 void netif_add_ext_callback(netif_ext_callback_t* callback, netif_ext_callback_fn fn);
+void netif_remove_ext_callback(netif_ext_callback_t* callback);
 void netif_invoke_ext_callback(struct netif* netif, netif_nsc_reason_t reason, const netif_ext_callback_args_t* args);
 #else
 #define NETIF_DECLARE_EXT_CALLBACK(name)
 #define netif_add_ext_callback(callback, fn)
+#define netif_remove_ext_callback(callback)
 #define netif_invoke_ext_callback(netif, reason, args)
 #endif
 

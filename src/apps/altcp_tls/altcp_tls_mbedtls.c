@@ -92,6 +92,21 @@
 #define ALTCP_MBEDTLS_ENTROPY_LEN   0
 #endif
 
+/** Define this to whatever overhead is suitable.
+ * Defaults to take care of record header, IV, AuthTag.
+ * The last '+16' is for alignment & security.
+ */
+#ifndef ALTCP_MBEDTLS_SNDBUF_OVERHEAD
+#define ALTCP_MBEDTLS_SNDBUF_OVERHEAD   (5 + 8 + 16 + (MEM_ALIGNMENT - 1) + 16)
+#endif
+
+/** When this is 1 and ALTCP_MBEDTLS_SNDBUF_OVERHEAD==1, the sndbuf
+ * is limited to the (negotiated) maximum fragment length.
+ */
+#ifndef ALTCP_MBEDTLS_SNDBUF_OVERHEAD_LIMIT_TO_MAX_FRAG_LEN
+#define ALTCP_MBEDTLS_SNDBUF_OVERHEAD_LIMIT_TO_MAX_FRAG_LEN   1
+#endif
+
 /* Variable prototype, the actual declaration is at the end of this file
    since it contains pointers to static functions declared here */
 extern const struct altcp_functions altcp_mbedtls_functions;
@@ -101,6 +116,8 @@ struct altcp_tls_config {
   mbedtls_ssl_config conf;
   mbedtls_entropy_context entropy;
   mbedtls_ctr_drbg_context ctr_drbg;
+  mbedtls_x509_crt *cert;
+  mbedtls_pk_context *pkey;
 #if defined(MBEDTLS_SSL_CACHE_C) && ALTCP_MBEDTLS_SESSION_CACHE_TIMEOUT_SECONDS
   /** Inter-connection cache for fast connection startup */
   struct mbedtls_ssl_cache_context cache;
@@ -665,14 +682,24 @@ dummy_rng(void *ctx, unsigned char *buffer, size_t len)
 static struct altcp_tls_config *
 altcp_tls_create_config(int is_server)
 {
+  size_t sz;
   int ret;
   struct altcp_tls_config *conf;
 
   altcp_mbedtls_mem_init();
 
-  conf = (struct altcp_tls_config *)altcp_mbedtls_alloc_config(sizeof(struct altcp_tls_config));
+  sz = sizeof(struct altcp_tls_config) + sizeof(mbedtls_x509_crt);
+  if (is_server) {
+    sz += sizeof(mbedtls_pk_context);
+  }
+
+  conf = (struct altcp_tls_config *)altcp_mbedtls_alloc_config(sz);
   if (conf == NULL) {
     return NULL;
+  }
+  conf->cert = (mbedtls_x509_crt *)(conf + 1);
+  if (is_server) {
+    conf->pkey = (mbedtls_pk_context *)((conf->cert) + 1);
   }
 
   mbedtls_ssl_config_init(&conf->conf);
@@ -720,35 +747,41 @@ altcp_tls_create_config_server_privkey_cert(const u8_t *privkey, size_t privkey_
     const u8_t *cert, size_t cert_len)
 {
   int ret;
-  static mbedtls_x509_crt srvcert;
-  static mbedtls_pk_context pkey;
+  mbedtls_x509_crt *srvcert;
+  mbedtls_pk_context *pkey;
   struct altcp_tls_config *conf = altcp_tls_create_config(1);
   if (conf == NULL) {
     return NULL;
   }
 
-  mbedtls_x509_crt_init(&srvcert);
-  mbedtls_pk_init(&pkey);
+  srvcert = conf->cert;
+  mbedtls_x509_crt_init(srvcert);
+
+  pkey = conf->pkey;
+  mbedtls_pk_init(pkey);
 
   /* Load the certificates and private key */
-  ret = mbedtls_x509_crt_parse(&srvcert, cert, cert_len);
+  ret = mbedtls_x509_crt_parse(srvcert, cert, cert_len);
   if (ret != 0) {
     LWIP_DEBUGF(ALTCP_MBEDTLS_DEBUG, ("mbedtls_x509_crt_parse failed: %d\n", ret));
     altcp_mbedtls_free_config(conf);
     return NULL;
   }
 
-  ret = mbedtls_pk_parse_key(&pkey, (const unsigned char *) privkey, privkey_len, privkey_pass, privkey_pass_len);
+  ret = mbedtls_pk_parse_key(pkey, (const unsigned char *) privkey, privkey_len, privkey_pass, privkey_pass_len);
   if (ret != 0) {
     LWIP_DEBUGF(ALTCP_MBEDTLS_DEBUG, ("mbedtls_pk_parse_public_key failed: %d\n", ret));
+    mbedtls_x509_crt_free(srvcert);
     altcp_mbedtls_free_config(conf);
     return NULL;
   }
 
-  mbedtls_ssl_conf_ca_chain(&conf->conf, srvcert.next, NULL);
-  ret = mbedtls_ssl_conf_own_cert(&conf->conf, &srvcert, &pkey);
+  mbedtls_ssl_conf_ca_chain(&conf->conf, srvcert->next, NULL);
+  ret = mbedtls_ssl_conf_own_cert(&conf->conf, srvcert, pkey);
   if (ret != 0) {
     LWIP_DEBUGF(ALTCP_MBEDTLS_DEBUG, ("mbedtls_ssl_conf_own_cert failed: %d\n", ret));
+    mbedtls_x509_crt_free(srvcert);
+    mbedtls_pk_free(pkey);
     altcp_mbedtls_free_config(conf);
     return NULL;
   }
@@ -759,29 +792,35 @@ struct altcp_tls_config *
 altcp_tls_create_config_client(const u8_t *cert, size_t cert_len)
 {
   int ret;
-  static mbedtls_x509_crt acc_cert;
+  mbedtls_x509_crt *acc_cert;
   struct altcp_tls_config *conf = altcp_tls_create_config(0);
   if (conf == NULL) {
     return NULL;
   }
 
-  mbedtls_x509_crt_init(&acc_cert);
+  /* Initialise certificates, allocated with conf */
+  acc_cert = conf->cert;
+  mbedtls_x509_crt_init(acc_cert);
 
   /* Load the certificates */
-  ret = mbedtls_x509_crt_parse(&acc_cert, cert, cert_len);
+  ret = mbedtls_x509_crt_parse(acc_cert, cert, cert_len);
   if (ret != 0) {
     LWIP_DEBUGF(ALTCP_MBEDTLS_DEBUG, ("mbedtls_x509_crt_parse failed: %d", ret));
     altcp_mbedtls_free_config(conf);
     return NULL;
   }
 
-  mbedtls_ssl_conf_ca_chain(&conf->conf, &acc_cert, NULL);
+  mbedtls_ssl_conf_ca_chain(&conf->conf, acc_cert, NULL);
   return conf;
 }
 
 void
 altcp_tls_free_config(struct altcp_tls_config *conf)
 {
+  if (conf->pkey) {
+    mbedtls_pk_free(conf->pkey);
+  }
+  mbedtls_x509_crt_free(conf->cert);
   altcp_mbedtls_free_config(conf);
 }
 
@@ -879,6 +918,11 @@ altcp_mbedtls_close(struct altcp_pcb *conn)
   }
   state = (altcp_mbedtls_state_t *)conn->state;
   if (state != NULL) {
+    if (state->rx) {
+      /* free leftover (unhandled) rx pbufs */
+      pbuf_free(state->rx);
+      state->rx = NULL;
+    }
     state->flags |= ALTCP_MBEDTLS_FLAGS_TX_CLOSED;
     if (state->flags & ALTCP_MBEDTLS_FLAGS_RX_CLOSED) {
       altcp_mbedtls_dealloc(conn);
@@ -886,6 +930,46 @@ altcp_mbedtls_close(struct altcp_pcb *conn)
   }
   altcp_free(conn);
   return ERR_OK;
+}
+
+/** Allow caller of altcp_write() to limit to negotiated chunk size
+ *  or remaining sndbuf space of inner_conn.
+ */
+static u16_t
+altcp_mbedtls_sndbuf(struct altcp_pcb *conn)
+{
+  /* Take care of record header, IV, AuthTag */
+#if ALTCP_MBEDTLS_SNDBUF_OVERHEAD
+  size_t ssl_added = ALTCP_MBEDTLS_SNDBUF_OVERHEAD;
+
+  if (conn) {
+    altcp_mbedtls_state_t *state;
+    state = (altcp_mbedtls_state_t*)conn->state;
+    if (!state || !(state->flags & ALTCP_MBEDTLS_FLAGS_HANDSHAKE_DONE)) {
+      return 0;
+    }
+    if (conn->inner_conn) {
+      u16_t sndbuf = altcp_sndbuf(conn->inner_conn);
+      /* internal sndbuf smaller than our offset */
+      if (ssl_added < sndbuf) {
+        size_t max_len = 0xFFFF;
+        size_t ret;
+#if defined(MBEDTLS_SSL_MAX_FRAGMENT_LENGTH) && ALTCP_MBEDTLS_SNDBUF_OVERHEAD_LIMIT_TO_MAX_FRAG_LEN
+        /* @todo: adjust ssl_added to real value related to negociated cipher */
+        size_t max_frag_len = mbedtls_ssl_get_max_frag_len(&state->ssl_context);
+        max_len = LWIP_MIN(max_frag_len, max_len);
+#endif
+        /* Adjust sndbuf of inner_conn with what added by SSL */
+        ret = LWIP_MIN(sndbuf - ssl_added, max_len);
+        LWIP_ASSERT("sndbuf overflow", ret <= 0xFFFF);
+        return (u16_t)ret;
+      }
+    }
+  }
+  return 0;
+#else /* ALTCP_MBEDTLS_SNDBUF_OVERHEAD */
+  return altcp_default_sndbuf(conn);
+#endif
 }
 
 /** Write data to a TLS connection. Calls into mbedTLS, which in turn calls into
@@ -1018,7 +1102,7 @@ const struct altcp_functions altcp_mbedtls_functions = {
   altcp_mbedtls_write,
   altcp_default_output,
   altcp_mbedtls_mss,
-  altcp_default_sndbuf,
+  altcp_mbedtls_sndbuf,
   altcp_default_sndqueuelen,
   altcp_default_nagle_disable,
   altcp_default_nagle_enable,

@@ -1894,6 +1894,7 @@ static void
 http_continue(void *connection)
 {
   struct http_state *hs = (struct http_state *)connection;
+  LWIP_ASSERT_CORE_LOCKED();
   if (hs && (hs->pcb) && (hs->handle)) {
     LWIP_ASSERT("hs->pcb != NULL", hs->pcb != NULL);
     LWIP_DEBUGF(HTTPD_DEBUG | LWIP_DBG_TRACE, ("httpd_continue: try to send more data\n"));
@@ -2627,6 +2628,8 @@ httpd_init(void)
 #endif
 #endif
   LWIP_DEBUGF(HTTPD_DEBUG, ("httpd_init\n"));
+
+  /* LWIP_ASSERT_CORE_LOCKED(); is checked by tcp_new() */
 
   pcb = altcp_tcp_new_ip_type(IPADDR_TYPE_ANY);
   LWIP_ASSERT("httpd_init: tcp_new failed", pcb != NULL);
