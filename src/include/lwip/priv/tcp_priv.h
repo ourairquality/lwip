@@ -77,6 +77,7 @@ void             tcp_txnow   (void);
 void             tcp_input   (struct pbuf *p, struct netif *inp);
 /* Used within the TCP code only: */
 struct tcp_pcb * tcp_alloc   (u8_t prio);
+void             tcp_free    (struct tcp_pcb *pcb);
 void             tcp_abandon (struct tcp_pcb *pcb, int reset);
 err_t            tcp_send_empty_ack(struct tcp_pcb *pcb);
 err_t            tcp_rexmit  (struct tcp_pcb *pcb);
@@ -176,6 +177,8 @@ err_t            tcp_process_refused_data(struct tcp_pcb *pcb);
                 ret = lwip_tcp_event((pcb)->callback_arg, (pcb), LWIP_EVENT_POLL, NULL, 0, ERR_OK); \
                 } else {                                                                            \
                 ret = ERR_ARG; } } while(0)
+/* For event API, last state SYN_RCVD must be excluded here: the application
+   has not seen this pcb, yet! */
 #define TCP_EVENT_ERR(last_state,errf,arg,err)  do { if (last_state != SYN_RCVD) {                \
                 lwip_tcp_event((arg), NULL, LWIP_EVENT_ERR, NULL, 0, (err)); } } while(0)
 
@@ -261,12 +264,12 @@ struct tcp_seg {
   u8_t  chksum_swapped;
 #endif /* TCP_CHECKSUM_ON_COPY */
   u8_t  flags;
-#define TF_SEG_OPTS_MSS         (u8_t)0x01U /* Include MSS option. */
+#define TF_SEG_OPTS_MSS         (u8_t)0x01U /* Include MSS option (only used in SYN segments) */
 #define TF_SEG_OPTS_TS          (u8_t)0x02U /* Include timestamp option. */
 #define TF_SEG_DATA_CHECKSUMMED (u8_t)0x04U /* ALL data (not the header) is
                                                checksummed into 'chksum' */
-#define TF_SEG_OPTS_WND_SCALE   (u8_t)0x08U /* Include WND SCALE option */
-#define TF_SEG_OPTS_SACK_PERM   (u8_t)0x10U /* Include SACK Permitted option */
+#define TF_SEG_OPTS_WND_SCALE   (u8_t)0x08U /* Include WND SCALE option (only used in SYN segments) */
+#define TF_SEG_OPTS_SACK_PERM   (u8_t)0x10U /* Include SACK Permitted option (only used in SYN segments) */
   struct tcp_hdr *tcphdr;  /* the TCP header */
 };
 
@@ -505,6 +508,10 @@ void tcp_netif_ip_addr_changed(const ip_addr_t* old_addr, const ip_addr_t* new_a
 
 #if TCP_QUEUE_OOSEQ
 void tcp_free_ooseq(struct tcp_pcb *pcb);
+#endif
+
+#if LWIP_TCP_PCB_NUM_EXT_ARGS
+err_t tcp_ext_arg_invoke_callbacks_passive_open(struct tcp_pcb_listen *lpcb, struct tcp_pcb *cpcb);
 #endif
 
 #ifdef __cplusplus

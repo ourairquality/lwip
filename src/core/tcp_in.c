@@ -61,6 +61,10 @@
 
 #include <string.h>
 
+#ifdef LWIP_HOOK_FILENAME
+#include LWIP_HOOK_FILENAME
+#endif
+
 /** Initial CWND calculation as defined RFC 2581 */
 #define LWIP_TCP_CALC_INITIAL_CWND(mss) ((tcpwnd_size_t)LWIP_MIN((4U * (mss)), LWIP_MAX((2U * (mss)), 4380U)))
 
@@ -295,7 +299,13 @@ tcp_input(struct pbuf *p, struct netif *inp)
            of the list since we are not very likely to receive that
            many segments for connections in TIME-WAIT. */
         LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_input: packed for TIME_WAITing connection.\n"));
-        tcp_timewait_input(pcb);
+#ifdef LWIP_HOOK_TCP_INPACKET_PCB
+        if (LWIP_HOOK_TCP_INPACKET_PCB(pcb, tcphdr, tcphdr_optlen, tcphdr_opt1len,
+                                       tcphdr_opt2, p) == ERR_OK)
+#endif
+        {
+          tcp_timewait_input(pcb);
+        }
         pbuf_free(p);
         return;
       }
@@ -361,7 +371,13 @@ tcp_input(struct pbuf *p, struct netif *inp)
       }
 
       LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_input: packed for LISTENing connection.\n"));
-      tcp_listen_input(lpcb);
+#ifdef LWIP_HOOK_TCP_INPACKET_PCB
+      if (LWIP_HOOK_TCP_INPACKET_PCB((struct tcp_pcb *)lpcb, tcphdr, tcphdr_optlen,
+                                     tcphdr_opt1len, tcphdr_opt2, p) == ERR_OK)
+#endif
+      {
+        tcp_listen_input(lpcb);
+      }
       pbuf_free(p);
       return;
     }
@@ -374,6 +390,13 @@ tcp_input(struct pbuf *p, struct netif *inp)
 #endif /* TCP_INPUT_DEBUG */
 
 
+#ifdef LWIP_HOOK_TCP_INPACKET_PCB
+  if ((pcb != NULL) && LWIP_HOOK_TCP_INPACKET_PCB(pcb, tcphdr, tcphdr_optlen,
+      tcphdr_opt1len, tcphdr_opt2, p) != ERR_OK) {
+    pbuf_free(p);
+    return;
+  }
+#endif
   if (pcb != NULL) {
     /* The incoming segment belongs to a connection. */
 #if TCP_INPUT_DEBUG
@@ -422,7 +445,7 @@ tcp_input(struct pbuf *p, struct netif *inp)
            deallocate the PCB. */
         TCP_EVENT_ERR(pcb->state, pcb->errf, pcb->callback_arg, ERR_RST);
         tcp_pcb_remove(&tcp_active_pcbs, pcb);
-        memp_free(MEMP_TCP_PCB, pcb);
+        tcp_free(pcb);
       } else {
         err = ERR_OK;
         /* If the application has registered a "sent" function to be
@@ -585,7 +608,7 @@ tcp_input_delayed_close(struct tcp_pcb *pcb)
       TCP_EVENT_ERR(pcb->state, pcb->errf, pcb->callback_arg, ERR_CLSD);
     }
     tcp_pcb_remove(&tcp_active_pcbs, pcb);
-    memp_free(MEMP_TCP_PCB, pcb);
+    tcp_free(pcb);
     return 1;
   }
   return 0;
@@ -679,6 +702,13 @@ tcp_listen_input(struct tcp_pcb_listen *pcb)
 #endif /* TCP_CALCULATE_EFF_SEND_MSS */
 
     MIB2_STATS_INC(mib2.tcppassiveopens);
+
+#if LWIP_TCP_PCB_NUM_EXT_ARGS
+    if (tcp_ext_arg_invoke_callbacks_passive_open(pcb, npcb) != ERR_OK) {
+      tcp_abandon(npcb, 0);
+      return;
+    }
+#endif
 
     /* Send a SYN|ACK together with the MSS option. */
     rc = tcp_enqueue_flags(npcb, TCP_SYN | TCP_ACK);

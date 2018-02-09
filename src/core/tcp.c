@@ -8,7 +8,7 @@
  * Transmission Control Protocol for IP\n
  * @see @ref api
  *
- * Common functions for the TCP implementation, such as functinos
+ * Common functions for the TCP implementation, such as functions
  * for manipulating the data structures and the TCP timer functions. TCP functions
  * related to input and output is found in tcp_in.c and tcp_out.c respectively.\n
  * 
@@ -27,11 +27,12 @@
  * 
  * Sending TCP data
  * ----------------
- * TCP data is sent by enqueueing the data with a call to
- * tcp_write(). When the data is successfully transmitted to the remote
- * host, the application will be notified with a call to a specified
- * callback function.
+ * TCP data is sent by enqueueing the data with a call to tcp_write() and
+ * triggering to send by calling tcp_output(). When the data is successfully
+ * transmitted to the remote host, the application will be notified with a
+ * call to a specified callback function.
  * - tcp_write()
+ * - tcp_output()
  * - tcp_sent()
  * 
  * Receiving TCP data
@@ -193,6 +194,9 @@ static u8_t tcp_timer_ctr;
 static u16_t tcp_new_port(void);
 
 static err_t tcp_close_shutdown_fin(struct tcp_pcb *pcb);
+#if LWIP_TCP_PCB_NUM_EXT_ARGS
+static void tcp_ext_arg_invoke_callbacks_destroyed(struct tcp_pcb_ext_args *ext_args);
+#endif
 
 /**
  * Initialize this module.
@@ -203,6 +207,28 @@ tcp_init(void)
 #ifdef LWIP_RAND
   tcp_port = TCP_ENSURE_LOCAL_PORT_RANGE(LWIP_RAND());
 #endif /* LWIP_RAND */
+}
+
+/** Free a tcp pcb */
+void
+tcp_free(struct tcp_pcb *pcb)
+{
+  LWIP_ASSERT("tcp_free: LISTEN", pcb->state != LISTEN);
+#if LWIP_TCP_PCB_NUM_EXT_ARGS
+  tcp_ext_arg_invoke_callbacks_destroyed(pcb->ext_args);
+#endif
+  memp_free(MEMP_TCP_PCB, pcb);
+}
+
+/** Free a tcp listen pcb */
+static void
+tcp_free_listen(struct tcp_pcb *pcb)
+{
+  LWIP_ASSERT("tcp_free_listen: !LISTEN", pcb->state != LISTEN);
+#if LWIP_TCP_PCB_NUM_EXT_ARGS
+  tcp_ext_arg_invoke_callbacks_destroyed(pcb->ext_args);
+#endif
+  memp_free(MEMP_TCP_PCB_LISTEN, pcb);
 }
 
 /**
@@ -340,7 +366,7 @@ tcp_close_shutdown(struct tcp_pcb *pcb, u8_t rst_on_unacked_data)
         /* prevent using a deallocated pcb: free it from tcp_input later */
         tcp_trigger_input_pcb_close();
       } else {
-        memp_free(MEMP_TCP_PCB, pcb);
+        tcp_free(pcb);
       }
       return ERR_OK;
     }
@@ -360,16 +386,16 @@ tcp_close_shutdown(struct tcp_pcb *pcb, u8_t rst_on_unacked_data)
       if (pcb->local_port != 0) {
         TCP_RMV(&tcp_bound_pcbs, pcb);
       }
-      memp_free(MEMP_TCP_PCB, pcb);
+      tcp_free(pcb);
       break;
     case LISTEN:
       tcp_listen_closed(pcb);
       tcp_pcb_remove(&tcp_listen_pcbs.pcbs, pcb);
-      memp_free(MEMP_TCP_PCB_LISTEN, pcb);
+      tcp_free_listen(pcb);
       break;
     case SYN_SENT:
       TCP_PCB_REMOVE_ACTIVE(pcb);
-      memp_free(MEMP_TCP_PCB, pcb);
+      tcp_free(pcb);
       MIB2_STATS_INC(mib2.tcpattemptfails);
       break;
     default:
@@ -544,10 +570,9 @@ tcp_abandon(struct tcp_pcb *pcb, int reset)
      the PCB with a NULL argument, and send an RST to the remote end. */
   if (pcb->state == TIME_WAIT) {
     tcp_pcb_remove(&tcp_tw_pcbs, pcb);
-    memp_free(MEMP_TCP_PCB, pcb);
+    tcp_free(pcb);
   } else {
     int send_rst = 0;
-    u16_t local_port = 0;
     enum tcp_state last_state;
     seqno = pcb->snd_nxt;
     ackno = pcb->rcv_nxt;
@@ -562,7 +587,6 @@ tcp_abandon(struct tcp_pcb *pcb, int reset)
       }
     } else {
       send_rst = reset;
-      local_port = pcb->local_port;
       TCP_PCB_REMOVE_ACTIVE(pcb);
     }
     if (pcb->unacked != NULL) {
@@ -579,10 +603,10 @@ tcp_abandon(struct tcp_pcb *pcb, int reset)
     tcp_backlog_accepted(pcb);
     if (send_rst) {
       LWIP_DEBUGF(TCP_RST_DEBUG, ("tcp_abandon: sending RST\n"));
-      tcp_rst(pcb, seqno, ackno, &pcb->local_ip, &pcb->remote_ip, local_port, pcb->remote_port);
+      tcp_rst(pcb, seqno, ackno, &pcb->local_ip, &pcb->remote_ip, pcb->local_port, pcb->remote_port);
     }
     last_state = pcb->state;
-    memp_free(MEMP_TCP_PCB, pcb);
+    tcp_free(pcb);
     TCP_EVENT_ERR(last_state, errf, errf_arg, ERR_ABRT);
   }
 }
@@ -855,7 +879,11 @@ tcp_listen_with_backlog_and_err(struct tcp_pcb *pcb, u8_t backlog, err_t *err)
   if (pcb->local_port != 0) {
     TCP_RMV(&tcp_bound_pcbs, pcb);
   }
-  memp_free(MEMP_TCP_PCB, pcb);
+#if LWIP_TCP_PCB_NUM_EXT_ARGS
+  /* copy over ext_args to listening pcb  */
+  memcpy(&lpcb->ext_args, &pcb->ext_args, sizeof(pcb->ext_args));
+#endif
+  tcp_free(pcb);
 #if LWIP_CALLBACK_API
   lpcb->accept = tcp_accept_null;
 #endif /* LWIP_CALLBACK_API */
@@ -1351,7 +1379,7 @@ tcp_slowtmr_start:
       last_state = pcb->state;
       pcb2 = pcb;
       pcb = pcb->next;
-      memp_free(MEMP_TCP_PCB, pcb2);
+      tcp_free(pcb2);
 
       tcp_active_pcbs_changed = 0;
       TCP_EVENT_ERR(last_state, err_fn, err_arg, ERR_ABRT);
@@ -1409,7 +1437,7 @@ tcp_slowtmr_start:
       }
       pcb2 = pcb;
       pcb = pcb->next;
-      memp_free(MEMP_TCP_PCB, pcb2);
+      tcp_free(pcb2);
     } else {
       prev = pcb;
       pcb = pcb->next;
@@ -2459,5 +2487,159 @@ tcp_pcbs_sane(void)
   return 1;
 }
 #endif /* TCP_DEBUG */
+
+#if LWIP_TCP_PCB_NUM_EXT_ARGS
+/**
+ * @defgroup tcp_raw_extargs ext arguments
+ * @ingroup tcp_raw
+ * Additional data storage per tcp pcb\n
+ * @see @ref tcp_raw
+ *
+ * When LWIP_TCP_PCB_NUM_EXT_ARGS is > 0, every tcp pcb (including listen pcb)
+ * includes a number of additional argument entries in an array.
+ *
+ * To support memory management, in addition to a 'void *', callbacks can be
+ * provided to manage transition from listening pcbs to connections and to
+ * deallocate memory when a pcb is deallocated (see struct @ref tcp_ext_arg_callbacks).
+ *
+ * After allocating this index, use @ref tcp_ext_arg_set and @ref tcp_ext_arg_get
+ * to store and load arguments from this index for a given pcb.
+ */
+
+static u8_t tcp_ext_arg_id;
+
+/**
+ * @ingroup tcp_raw_extargs
+ * Allocate an index to store data in ext_args member of struct tcp_pcb.
+ * Returned value is an index in mentioned array.
+ * The index is *global* over all pcbs!
+ *
+ * When @ref LWIP_TCP_PCB_NUM_EXT_ARGS is > 0, every tcp pcb (including listen pcb)
+ * includes a number of additional argument entries in an array.
+ *
+ * To support memory management, in addition to a 'void *', callbacks can be
+ * provided to manage transition from listening pcbs to connections and to
+ * deallocate memory when a pcb is deallocated (see struct @ref tcp_ext_arg_callbacks).
+ *
+ * After allocating this index, use @ref tcp_ext_arg_set and @ref tcp_ext_arg_get
+ * to store and load arguments from this index for a given pcb.
+ *
+ * @return a unique index into struct tcp_pcb.ext_args
+ */
+u8_t
+tcp_ext_arg_alloc_id(void)
+{
+  u8_t result = tcp_ext_arg_id;
+  tcp_ext_arg_id++;
+
+  LWIP_ASSERT_CORE_LOCKED();
+
+#if LWIP_TCP_PCB_NUM_EXT_ARGS >= 255
+#error LWIP_TCP_PCB_NUM_EXT_ARGS
+#endif
+  LWIP_ASSERT("Increase LWIP_TCP_PCB_NUM_EXT_ARGS in lwipopts.h", result < LWIP_TCP_PCB_NUM_EXT_ARGS);
+  return result;
+}
+
+/**
+ * @ingroup tcp_raw_extargs
+ * Set callbacks for a given index of ext_args on the specified pcb.
+ *
+ * @param pcb tcp_pcb for which to set the callback
+ * @param id ext_args index to set (allocated via @ref tcp_ext_arg_alloc_id)
+ * @param callbacks callback table (const since it is referenced, not copied!)
+ */
+void
+tcp_ext_arg_set_callbacks(struct tcp_pcb *pcb, uint8_t id, const struct tcp_ext_arg_callbacks * const callbacks)
+{
+  LWIP_ASSERT("pcb != NULL", pcb != NULL);
+  LWIP_ASSERT("id < LWIP_TCP_PCB_NUM_EXT_ARGS", id < LWIP_TCP_PCB_NUM_EXT_ARGS);
+  LWIP_ASSERT("callbacks != NULL", callbacks != NULL);
+
+  LWIP_ASSERT_CORE_LOCKED();
+
+  pcb->ext_args[id].callbacks = callbacks;
+}
+
+/**
+ * @ingroup tcp_raw_extargs
+ * Set data for a given index of ext_args on the specified pcb.
+ *
+ * @param pcb tcp_pcb for which to set the data
+ * @param id ext_args index to set (allocated via @ref tcp_ext_arg_alloc_id)
+ * @param arg data pointer to set
+ */
+void tcp_ext_arg_set(struct tcp_pcb *pcb, uint8_t id, void *arg)
+{
+  LWIP_ASSERT("pcb != NULL", pcb != NULL);
+  LWIP_ASSERT("id < LWIP_TCP_PCB_NUM_EXT_ARGS", id < LWIP_TCP_PCB_NUM_EXT_ARGS);
+
+  LWIP_ASSERT_CORE_LOCKED();
+
+  pcb->ext_args[id].data = arg;
+}
+
+/**
+ * @ingroup tcp_raw_extargs
+ * Set data for a given index of ext_args on the specified pcb.
+ *
+ * @param pcb tcp_pcb for which to set the data
+ * @param id ext_args index to set (allocated via @ref tcp_ext_arg_alloc_id)
+ * @return data pointer at the given index
+ */
+void *tcp_ext_arg_get(const struct tcp_pcb *pcb, uint8_t id)
+{
+  LWIP_ASSERT("pcb != NULL", pcb != NULL);
+  LWIP_ASSERT("id < LWIP_TCP_PCB_NUM_EXT_ARGS", id < LWIP_TCP_PCB_NUM_EXT_ARGS);
+
+  LWIP_ASSERT_CORE_LOCKED();
+
+  return pcb->ext_args[id].data;
+}
+
+/** This function calls the "destroy" callback for all ext_args once a pcb is
+ * freed.
+ */
+static void
+tcp_ext_arg_invoke_callbacks_destroyed(struct tcp_pcb_ext_args *ext_args)
+{
+  int i;
+  LWIP_ASSERT("ext_args != NULL", ext_args != NULL);
+
+  for (i = 0; i < LWIP_TCP_PCB_NUM_EXT_ARGS; i++) {
+    if (ext_args[i].callbacks != NULL) {
+      if (ext_args[i].callbacks->destroy != NULL) {
+        ext_args[i].callbacks->destroy((u8_t)i, ext_args[i].data);
+      }
+    }
+  }
+}
+
+/** This function calls the "passive_open" callback for all ext_args if a connection
+ * is in the process of being accepted. This is called just after the SYN is
+ * received and before a SYN/ACK is sent, to allow to modify the very first
+ * segment sent even on passive open. Naturally, the "accepted" callback of the
+ * pcb has not been called yet!
+ */
+err_t
+tcp_ext_arg_invoke_callbacks_passive_open(struct tcp_pcb_listen *lpcb, struct tcp_pcb *cpcb)
+{
+  int i;
+  LWIP_ASSERT("lpcb != NULL", lpcb != NULL);
+  LWIP_ASSERT("cpcb != NULL", cpcb != NULL);
+
+  for (i = 0; i < LWIP_TCP_PCB_NUM_EXT_ARGS; i++) {
+    if (lpcb->ext_args[i].callbacks != NULL) {
+      if (lpcb->ext_args[i].callbacks->passive_open != NULL) {
+        err_t err = lpcb->ext_args[i].callbacks->passive_open((u8_t)i, lpcb, cpcb);
+        if (err != ERR_OK) {
+          return err;
+        }
+      }
+    }
+  }
+  return ERR_OK;
+}
+#endif /* LWIP_TCP_PCB_NUM_EXT_ARGS */
 
 #endif /* LWIP_TCP */
