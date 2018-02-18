@@ -317,7 +317,7 @@ httpc_tcp_recv(void *arg, struct altcp_pcb *pcb, struct pbuf *p, err_t r)
       pbuf_free(p);
     }
   }
-  return ret;
+  return ERR_OK;
 }
 
 /** http client tcp err callback */
