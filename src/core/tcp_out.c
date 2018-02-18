@@ -965,9 +965,7 @@ tcp_split_unsent_seg(struct tcp_pcb *pcb, u16_t split)
 memerr:
   TCP_STATS_INC(tcp.memerr);
 
-  if (seg != NULL) {
-    tcp_segs_free(seg);
-  }
+  LWIP_ASSERT("seg == NULL", seg == NULL);
   if (p != NULL) {
     pbuf_free(p);
   }
@@ -1426,6 +1424,9 @@ tcp_output_segment(struct tcp_seg *seg, struct tcp_pcb *pcb, struct netif *netif
   err_t err;
   u16_t len;
   u32_t *opts;
+#if TCP_CHECKSUM_ON_COPY
+  int seg_chksum_was_swapped = 0;
+#endif
 
   if (tcp_output_segment_busy(seg)) {
     /* This should not happen: rexmit functions should have checked this.
@@ -1543,6 +1544,7 @@ tcp_output_segment(struct tcp_seg *seg, struct tcp_pcb *pcb, struct netif *netif
                                    seg->p->tot_len, TCPH_HDRLEN_BYTES(seg->tcphdr), &pcb->local_ip, &pcb->remote_ip);
     /* add payload checksum */
     if (seg->chksum_swapped) {
+      seg_chksum_was_swapped = 1;
       seg->chksum = SWAP_BYTES_IN_WORD(seg->chksum);
       seg->chksum_swapped = 0;
     }
@@ -1568,6 +1570,16 @@ tcp_output_segment(struct tcp_seg *seg, struct tcp_pcb *pcb, struct netif *netif
   err = ip_output_if(seg->p, &pcb->local_ip, &pcb->remote_ip, pcb->ttl,
                      pcb->tos, IP_PROTO_TCP, netif);
   NETIF_RESET_HINTS(netif);
+
+#if TCP_CHECKSUM_ON_COPY
+  if (seg_chksum_was_swapped) {
+    /* if data is added to this segment later, chksum needs to be swapped,
+       so restore this now */
+    seg->chksum = SWAP_BYTES_IN_WORD(seg->chksum);
+    seg->chksum_swapped = 1;
+  }
+#endif
+
   return err;
 }
 

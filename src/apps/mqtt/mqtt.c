@@ -277,18 +277,19 @@ mqtt_output_send(struct mqtt_ringbuf_t *rb, struct altcp_pcb *tpcb)
 /**
  * Create request item
  * @param r_objs Pointer to request objects
+ * @param r_objs_len Number of array entries
  * @param pkt_id Packet identifier of request
  * @param cb Packet callback to call when requests lifetime ends
  * @param arg Parameter following callback
  * @return Request or NULL if failed to create
  */
 static struct mqtt_request_t *
-mqtt_create_request(struct mqtt_request_t *r_objs, u16_t pkt_id, mqtt_request_cb_t cb, void *arg)
+mqtt_create_request(struct mqtt_request_t *r_objs, size_t r_objs_len, u16_t pkt_id, mqtt_request_cb_t cb, void *arg)
 {
   struct mqtt_request_t *r = NULL;
   u8_t n;
   LWIP_ASSERT("mqtt_create_request: r_objs != NULL", r_objs != NULL);
-  for (n = 0; n < MQTT_REQ_MAX_IN_FLIGHT; n++) {
+  for (n = 0; n < r_objs_len; n++) {
     /* Item point to itself if not in use */
     if (r_objs[n].next == &r_objs[n]) {
       r = &r_objs[n];
@@ -429,13 +430,14 @@ mqtt_clear_requests(struct mqtt_request_t **tail)
 /**
  * Initialize all request items
  * @param r_objs Pointer to request objects
+ * @param r_objs_len Number of array entries
  */
 static void
-mqtt_init_requests(struct mqtt_request_t *r_objs)
+mqtt_init_requests(struct mqtt_request_t *r_objs, size_t r_objs_len)
 {
   u8_t n;
   LWIP_ASSERT("mqtt_init_requests: r_objs != NULL", r_objs != NULL);
-  for (n = 0; n < MQTT_REQ_MAX_IN_FLIGHT; n++) {
+  for (n = 0; n < r_objs_len; n++) {
     /* Item pointing to itself indicates unused */
     r_objs[n].next = &r_objs[n];
   }
@@ -672,16 +674,23 @@ mqtt_message_received(mqtt_client_t *client, u8_t fixed_hdr_idx, u16_t length, u
   mqtt_connection_status_t res = MQTT_CONNECT_ACCEPTED;
 
   u8_t *var_hdr_payload = client->rx_buffer + fixed_hdr_idx;
+  size_t var_hdr_payload_bufsize = sizeof(client->rx_buffer) - fixed_hdr_idx;
 
   /* Control packet type */
   u8_t pkt_type = MQTT_CTL_PACKET_TYPE(client->rx_buffer[0]);
   u16_t pkt_id = 0;
 
+  LWIP_ASSERT("client->msg_idx < MQTT_VAR_HEADER_BUFFER_LEN", client->msg_idx < MQTT_VAR_HEADER_BUFFER_LEN);
+  LWIP_ASSERT("fixed_hdr_idx <= client->msg_idx", fixed_hdr_idx <= client->msg_idx);
   LWIP_ERROR("buffer length mismatch", fixed_hdr_idx + length <= MQTT_VAR_HEADER_BUFFER_LEN,
              return MQTT_CONNECT_DISCONNECTED);
 
   if (pkt_type == MQTT_MSG_TYPE_CONNACK) {
     if (client->conn_state == MQTT_CONNECTING) {
+      if (length < 2) {
+        LWIP_DEBUGF(MQTT_DEBUG_WARN,( "mqtt_message_received: Received short CONNACK message\n"));
+        goto out_disconnect;
+      }
       /* Get result code from CONNACK */
       res = (mqtt_connection_status_t)var_hdr_payload[1];
       LWIP_DEBUGF(MQTT_DEBUG_TRACE, ("mqtt_message_received: Connect response code %d\n", res));
@@ -705,24 +714,39 @@ mqtt_message_received(mqtt_client_t *client, u8_t fixed_hdr_idx, u16_t length, u
     u16_t payload_length = length;
     u8_t qos = MQTT_CTL_PACKET_QOS(client->rx_buffer[0]);
 
-    if ((client->msg_idx <= MQTT_VAR_HEADER_BUFFER_LEN) && (length > 0)) {
+    if (client->msg_idx <= MQTT_VAR_HEADER_BUFFER_LEN) {
       /* Should have topic and pkt id*/
       u8_t *topic;
       u16_t after_topic;
       u8_t bkp;
-      u16_t topic_len = var_hdr_payload[0];
+      u16_t topic_len;
+      u16_t qos_len = (qos ? 2U : 0U);
+      if (length < 2 + qos_len) {
+        LWIP_DEBUGF(MQTT_DEBUG_WARN,( "mqtt_message_received: Received short PUBLISH packet\n"));
+        goto out_disconnect;
+      }
+      topic_len = var_hdr_payload[0];
       topic_len = (topic_len << 8) + (u16_t)(var_hdr_payload[1]);
+      if ((topic_len > length - (2 + qos_len)) ||
+          (topic_len > var_hdr_payload_bufsize - (2 + qos_len))) {
+        LWIP_DEBUGF(MQTT_DEBUG_WARN,( "mqtt_message_received: Received short PUBLISH packet (topic)\n"));
+        goto out_disconnect;
+      }
 
       topic = var_hdr_payload + 2;
       after_topic = 2 + topic_len;
-      /* Check length, add one byte even for QoS 0 so that zero termination will fit */
-      if ((after_topic + (qos ? 2 : 1)) > length) {
+      /* Check buffer length, add one byte even for QoS 0 so that zero termination will fit */
+      if ((after_topic + (qos ? 2U : 1U)) > var_hdr_payload_bufsize) {
         LWIP_DEBUGF(MQTT_DEBUG_WARN, ("mqtt_message_received: Receive buffer can not fit topic + pkt_id\n"));
         goto out_disconnect;
       }
 
       /* id for QoS 1 and 2 */
       if (qos > 0) {
+        if (length < after_topic + 2U) {
+          LWIP_DEBUGF(MQTT_DEBUG_WARN,( "mqtt_message_received: Received short PUBLISH packet (after_topic)\n"));
+          goto out_disconnect;
+        }
         client->inpub_pkt_id = ((u16_t)var_hdr_payload[after_topic] << 8) + (u16_t)var_hdr_payload[after_topic + 1];
         after_topic += 2;
       } else {
@@ -745,6 +769,10 @@ mqtt_message_received(mqtt_client_t *client, u8_t fixed_hdr_idx, u16_t length, u
       topic[topic_len] = bkp;
     }
     if (payload_length > 0 || remaining_length == 0) {
+      if (length < (size_t)(payload_offset + payload_length)) {
+        LWIP_DEBUGF(MQTT_DEBUG_WARN,( "mqtt_message_received: Received short packet (payload)\n"));
+        goto out_disconnect;
+      }
       client->data_cb(client->inpub_arg, var_hdr_payload + payload_offset, payload_length, remaining_length == 0 ? MQTT_DATA_FLAG_LAST : 0);
       /* Reply if QoS > 0 */
       if (remaining_length == 0 && qos > 0) {
@@ -816,19 +844,29 @@ mqtt_parse_incoming(mqtt_client_t *client, struct pbuf *p)
   u8_t b = 0;
 
   while (p->tot_len > in_offset) {
+    /* We ALWAYS parse the header here first. Even if the header was not
+       included in this segment, we re-parse it here by buffering it in
+       client->rx_buffer. client->msg_idx keeps track of this. */
     if ((fixed_hdr_idx < 2) || ((b & 0x80) != 0)) {
 
       if (fixed_hdr_idx < client->msg_idx) {
+        /* parse header from old pbuf (buffered in client->rx_buffer) */
         b = client->rx_buffer[fixed_hdr_idx];
       } else {
+        /* parse header from this pbuf and save it in client->rx_buffer in case
+           it comes in segmented */
         b = pbuf_get_at(p, in_offset++);
         client->rx_buffer[client->msg_idx++] = b;
       }
       fixed_hdr_idx++;
 
       if (fixed_hdr_idx >= 2) {
+        /* fixed header contains at least 2 bytes but can contain more, depending on
+           'remaining length'. All bytes but the last of this have 0x80 set to
+           indicate more bytes are coming. */
         msg_rem_len |= (u32_t)(b & 0x7f) << ((fixed_hdr_idx - 2) * 7);
         if ((b & 0x80) == 0) {
+          /* fixed header is done */
           LWIP_DEBUGF(MQTT_DEBUG_TRACE, ("mqtt_parse_incoming: Remaining length after fixed header: %"U32_F"\n", msg_rem_len));
           if (msg_rem_len == 0) {
             /* Complete message with no extra headers of payload received */
@@ -836,12 +874,14 @@ mqtt_parse_incoming(mqtt_client_t *client, struct pbuf *p)
             client->msg_idx = 0;
             fixed_hdr_idx = 0;
           } else {
-            /* Bytes remaining in message */
+            /* Bytes remaining in message (changes remaining length if this is
+               not the first segment of this message) */
             msg_rem_len = (msg_rem_len + fixed_hdr_idx) - client->msg_idx;
           }
         }
       }
     } else {
+      /* Fixed header has been parsed, parse variable header */
       u16_t cpy_len, cpy_start, buffer_space;
 
       cpy_start = (client->msg_idx - fixed_hdr_idx) % (MQTT_VAR_HEADER_BUFFER_LEN - fixed_hdr_idx) + fixed_hdr_idx;
@@ -862,7 +902,7 @@ mqtt_parse_incoming(mqtt_client_t *client, struct pbuf *p)
       msg_rem_len -= cpy_len;
 
       LWIP_DEBUGF(MQTT_DEBUG_TRACE, ("mqtt_parse_incoming: msg_idx: %"U32_F", cpy_len: %"U16_F", remaining %"U32_F"\n", client->msg_idx, cpy_len, msg_rem_len));
-      if (msg_rem_len == 0 || cpy_len == buffer_space) {
+      if ((msg_rem_len == 0) || (cpy_len == buffer_space)) {
         /* Whole message received or buffer is full */
         mqtt_connection_status_t res = mqtt_message_received(client, fixed_hdr_idx, (cpy_start + cpy_len) - fixed_hdr_idx, msg_rem_len);
         if (res != MQTT_CONNECT_ACCEPTED) {
@@ -1073,21 +1113,21 @@ mqtt_publish(mqtt_client_t *client, const char *topic, const void *payload, u16_
   LWIP_ERROR("mqtt_publish: topic length overflow", (topic_strlen <= (0xFFFF - 2)), return ERR_ARG);
   topic_len = (u16_t)topic_strlen;
   total_len = 2 + topic_len + payload_length;
-  LWIP_ERROR("mqtt_publish: total length overflow", (total_len <= 0xFFFF), return ERR_ARG);
-  remaining_length = (u16_t)total_len;
-
-  LWIP_DEBUGF(MQTT_DEBUG_TRACE, ("mqtt_publish: Publish with payload length %d to topic \"%s\"\n", payload_length, topic));
 
   if (qos > 0) {
-    remaining_length += 2;
+    total_len += 2;
     /* Generate pkt_id id for QoS1 and 2 */
     pkt_id = msg_generate_packet_id(client);
   } else {
     /* Use reserved value pkt_id 0 for QoS 0 in request handle */
     pkt_id = 0;
   }
+  LWIP_ERROR("mqtt_publish: total length overflow", (total_len <= 0xFFFF), return ERR_ARG);
+  remaining_length = (u16_t)total_len;
 
-  r = mqtt_create_request(client->req_list, pkt_id, cb, arg);
+  LWIP_DEBUGF(MQTT_DEBUG_TRACE, ("mqtt_publish: Publish with payload length %d to topic \"%s\"\n", payload_length, topic));
+
+  r = mqtt_create_request(client->req_list, LWIP_ARRAYSIZE(client->req_list), pkt_id, cb, arg);
   if (r == NULL) {
     return ERR_MEM;
   }
@@ -1158,7 +1198,7 @@ mqtt_sub_unsub(mqtt_client_t *client, const char *topic, u8_t qos, mqtt_request_
   }
 
   pkt_id = msg_generate_packet_id(client);
-  r = mqtt_create_request(client->req_list, pkt_id, cb, arg);
+  r = mqtt_create_request(client->req_list, LWIP_ARRAYSIZE(client->req_list), pkt_id, cb, arg);
   if (r == NULL) {
     return ERR_MEM;
   }
@@ -1267,7 +1307,7 @@ mqtt_client_connect(mqtt_client_t *client, const ip_addr_t *ip_addr, u16_t port,
   client->connect_arg = arg;
   client->connect_cb = cb;
   client->keep_alive = client_info->keep_alive;
-  mqtt_init_requests(client->req_list);
+  mqtt_init_requests(client->req_list, LWIP_ARRAYSIZE(client->req_list));
 
   /* Build connect message */
   if (client_info->will_topic != NULL && client_info->will_msg != NULL) {
