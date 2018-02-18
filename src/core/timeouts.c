@@ -251,12 +251,17 @@ void sys_timeouts_init(void)
 
   /* Start the cyclic timeouts from the same base time, and round it off to make it cleaner debugging. */
   now = ((sys_now() / 1000) + 1) * 1000;
-  
+
   /* tcp_tmr() at index 0 is started on demand */
   for (i = (LWIP_TCP ? 1 : 0); i < LWIP_ARRAYSIZE(lwip_cyclic_timers); i++) {
     /* we have to cast via size_t to get rid of const warning
       (this is OK as cyclic_timer() casts back to const* */
-    sys_timeout_abs(now + lwip_cyclic_timers[i].interval_ms, lwip_cyclic_timer, LWIP_CONST_CAST(void *, &lwip_cyclic_timers[i]));
+    struct lwip_cyclic_timer *cyclic = LWIP_CONST_CAST(void *, &lwip_cyclic_timers[i]);
+#if LWIP_DEBUG_TIMERNAMES
+    sys_timeout_abs(now + lwip_cyclic_timers[i].interval_ms, lwip_cyclic_timer, cyclic, cyclic->handler_name);
+#else /* LWIP_DEBUG_TIMERNAMES */
+    sys_timeout_abs(now + lwip_cyclic_timers[i].interval_ms, lwip_cyclic_timer, cyclic);
+#endif
   }
 }
 
