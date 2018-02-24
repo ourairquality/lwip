@@ -2088,6 +2088,7 @@ PREDEFINED             = __DOXYGEN__=1 \
                          LWIP_ICMP=1 \
                          LWIP_RAW=1 \
                          LWIP_DHCP=1 \
+                         LWIP_IPV6_DHCP6=1 \
                          LWIP_UDPLITE=1 \
                          LWIP_UDP=1 \
                          LWIP_IGMP=1 \
@@ -2136,6 +2137,7 @@ PREDEFINED             = __DOXYGEN__=1 \
                          SO_REUSE=1 \
                          SO_REUSE_RXTOALL=1 \
                          LWIP_HAVE_SLIPIF=1 \
+                         SLIP_RX_FROM_ISR=1 \
                          LWIP_6LOWPAN=1 \
                          LWIP_TCP_PCB_NUM_EXT_ARGS=1
 

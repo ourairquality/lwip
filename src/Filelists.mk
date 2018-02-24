@@ -43,6 +43,7 @@ COREFILES=$(LWIPDIR)/core/init.c \
 	$(LWIPDIR)/core/stats.c \
 	$(LWIPDIR)/core/sys.c \
 	$(LWIPDIR)/core/altcp.c \
+	$(LWIPDIR)/core/altcp_alloc.c \
 	$(LWIPDIR)/core/altcp_tcp.c \
 	$(LWIPDIR)/core/tcp.c \
 	$(LWIPDIR)/core/tcp_in.c \
@@ -88,6 +89,7 @@ NETIFFILES=$(LWIPDIR)/netif/ethernet.c \
 
 # SIXLOWPAN: 6LoWPAN
 SIXLOWPAN=$(LWIPDIR)/netif/lowpan6.c \
+	$(LWIPDIR)/netif/lowpan6_ble.c
 
 # PPPFILES: PPP
 PPPFILES=$(LWIPDIR)/netif/ppp/auth.c \
@@ -153,8 +155,10 @@ SNMPFILES=$(LWIPDIR)/apps/snmp/snmp_asn1.c \
 	$(LWIPDIR)/apps/snmp/snmp_threadsync.c \
 	$(LWIPDIR)/apps/snmp/snmp_traps.c
 
-# HTTPDFILES: HTTP server
-HTTPDFILES=$(LWIPDIR)/apps/http/fs.c \
+# HTTPFILES: HTTP server + client
+HTTPFILES=$(LWIPDIR)/apps/http/altcp_proxyconnect.c \
+	$(LWIPDIR)/apps/http/fs.c \
+	$(LWIPDIR)/apps/http/http_client.c \
 	$(LWIPDIR)/apps/http/httpd.c
 
 # MAKEFSDATA: MAKEFSDATA HTTP server host utility
@@ -188,7 +192,7 @@ MBEDTLS_FILES=$(LWIPDIR)/apps/altcp_tls/altcp_tls_mbedtls.c \
 
 # LWIPAPPFILES: All LWIP APPs
 LWIPAPPFILES=$(SNMPFILES) \
-	$(HTTPDFILES) \
+	$(HTTPFILES) \
 	$(LWIPERFFILES) \
 	$(SMTPFILES) \
 	$(SNTPFILES) \

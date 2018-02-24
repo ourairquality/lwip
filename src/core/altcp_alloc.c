@@ -1,8 +1,12 @@
 /**
  * @file
- * Application layered TCP/TLS connection API (to be used from TCPIP thread)
+ * Application layered TCP connection API (to be used from TCPIP thread)\n
+ * This interface mimics the tcp callback API to the application while preventing
+ * direct linking (much like virtual functions).
+ * This way, an application can make use of other application layer protocols
+ * on top of TCP without knowing the details (e.g. TLS, proxy connection).
  *
- * This file contains structure definitions for a TLS layer using mbedTLS.
+ * This file contains allocation implementation that combine several layers.
  */
 
 /*
@@ -36,48 +40,42 @@
  * Author: Simon Goldschmidt <goldsimon@gmx.de>
  *
  */
-#ifndef LWIP_HDR_ALTCP_MBEDTLS_STRUCTS_H
-#define LWIP_HDR_ALTCP_MBEDTLS_STRUCTS_H
 
 #include "lwip/opt.h"
 
 #if LWIP_ALTCP /* don't build if not configured for use in lwipopts.h */
 
-#include "lwip/apps/altcp_tls_mbedtls_opts.h"
-
-#if LWIP_ALTCP_TLS && LWIP_ALTCP_TLS_MBEDTLS
-
 #include "lwip/altcp.h"
-#include "lwip/pbuf.h"
+#include "lwip/altcp_tcp.h"
+#include "lwip/altcp_tls.h"
+#include "lwip/priv/altcp_priv.h"
+#include "lwip/mem.h"
 
-#include "mbedtls/ssl.h"
+#include <string.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+#if LWIP_ALTCP_TLS
 
-#define ALTCP_MBEDTLS_FLAGS_HANDSHAKE_DONE    0x01
-#define ALTCP_MBEDTLS_FLAGS_UPPER_CALLED      0x02
-#define ALTCP_MBEDTLS_FLAGS_RX_CLOSE_QUEUED   0x04
-#define ALTCP_MBEDTLS_FLAGS_RX_CLOSED         0x08
-#define ALTCP_MBEDTLS_FLAGS_APPLDATA_SENT     0x10
+/** This standard allocator function creates an altcp pcb for
+ * TLS over TCP */
+struct altcp_pcb *
+altcp_tls_alloc(void *arg, u8_t ip_type)
+{
+  struct altcp_pcb *inner_conn, *ret;
+  struct altcp_tls_config *config = (struct altcp_tls_config *)arg;
+  LWIP_UNUSED_ARG(ip_type);
 
-typedef struct altcp_mbedtls_state_s {
-  void *conf;
-  mbedtls_ssl_context ssl_context;
-  /* chain of rx pbufs (before decryption) */
-  struct pbuf *rx;
-  struct pbuf *rx_app;
-  u8_t flags;
-  int rx_passed_unrecved;
-  int bio_bytes_read;
-  int bio_bytes_appl;
-} altcp_mbedtls_state_t;
-
-#ifdef __cplusplus
+  inner_conn = altcp_tcp_new_ip_type(ip_type);
+  if (inner_conn == NULL) {
+    return NULL;
+  }
+  ret = altcp_tls_new(config, inner_conn);
+  if (ret == NULL) {
+    altcp_close(inner_conn);
+  }
+  return ret;
 }
-#endif
 
-#endif /* LWIP_ALTCP_TLS && LWIP_ALTCP_TLS_MBEDTLS */
+
+#endif /* LWIP_ALTCP_TLS */
+
 #endif /* LWIP_ALTCP */
-#endif /* LWIP_HDR_ALTCP_MBEDTLS_STRUCTS_H */

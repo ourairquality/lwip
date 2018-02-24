@@ -49,6 +49,7 @@
 
 #include "lwip/altcp.h"
 #include "lwip/priv/altcp_priv.h"
+#include "lwip/altcp_tcp.h"
 #include "lwip/tcp.h"
 #include "lwip/mem.h"
 
@@ -56,6 +57,10 @@
 
 extern const struct altcp_functions altcp_tcp_functions;
 
+/**
+ * For altcp layer implementations only: allocate a new struct altcp_pcb from the pool
+ * and zero the memory
+ */
 struct altcp_pcb *
 altcp_alloc(void)
 {
@@ -66,6 +71,9 @@ altcp_alloc(void)
   return ret;
 }
 
+/**
+ * For altcp layer implementations only: return a struct altcp_pcb to the pool
+ */
 void
 altcp_free(struct altcp_pcb *conn)
 {
@@ -75,6 +83,55 @@ altcp_free(struct altcp_pcb *conn)
     }
     memp_free(MEMP_ALTCP_PCB, conn);
   }
+}
+
+/**
+ * @ingroup altcp
+ * altcp_new_ip6: @ref altcp_new for IPv6 
+ */
+struct altcp_pcb *
+altcp_new_ip6(altcp_allocator_t *allocator)
+{
+  return altcp_new_ip_type(allocator, IPADDR_TYPE_V6);
+}
+
+/** 
+ * @ingroup altcp
+ * altcp_new: @ref altcp_new for IPv4 
+ */
+struct altcp_pcb *
+altcp_new(altcp_allocator_t *allocator)
+{
+  return altcp_new_ip_type(allocator, IPADDR_TYPE_V4);
+}
+
+/**
+ * @ingroup altcp
+ * altcp_new_ip_type: called by applications to allocate a new pcb with the help of an
+ * allocator function.
+ *
+ * @param allocator allocator function and argument
+ * @param ip_type IP version of the pcb (@ref lwip_ip_addr_type)
+ * @return a new altcp_pcb or NULL on error
+ */
+struct altcp_pcb *
+altcp_new_ip_type(altcp_allocator_t *allocator, u8_t ip_type)
+{
+  struct altcp_pcb *conn;
+  if (allocator == NULL) {
+    /* no allocator given, create a simple TCP connection */
+    return altcp_tcp_new_ip_type(ip_type);
+  }
+  if (allocator->alloc == NULL) {
+    /* illegal allocator */
+    return NULL;
+  }
+  conn = allocator->alloc(allocator->arg, ip_type);
+  if (conn == NULL) {
+    /* allocation failed */
+    return NULL;
+  }
+  return conn;
 }
 
 /**
@@ -414,8 +471,14 @@ altcp_default_bind(struct altcp_pcb *conn, const ip_addr_t *ipaddr, u16_t port)
 err_t
 altcp_default_shutdown(struct altcp_pcb *conn, int shut_rx, int shut_tx)
 {
-  if (conn && conn->inner_conn) {
-    return altcp_shutdown(conn->inner_conn, shut_rx, shut_tx);
+  if (conn) {
+    if (shut_rx && shut_tx && conn->fns && conn->fns->close) {
+      /* default shutdown for both sides is close */
+      return conn->fns->close(conn);
+    }
+    if (conn->inner_conn) {
+      return altcp_shutdown(conn->inner_conn, shut_rx, shut_tx);
+    }
   }
   return ERR_VAL;
 }

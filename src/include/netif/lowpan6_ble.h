@@ -1,12 +1,12 @@
 /**
  * @file
- * Application layered TCP/TLS connection API (to be used from TCPIP thread)
- *
- * This file contains structure definitions for a TLS layer using mbedTLS.
+ * 6LowPAN over BLE for IPv6 (RFC7668).
  */
 
 /*
- * Copyright (c) 2017 Simon Goldschmidt
+ * Copyright (c) 2017 Benjamin Aigner
+ * Copyright (c) 2015 Inico Technologies Ltd. , Author: Ivan Delamer <delamer@inicotech.com>
+ * 
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification,
@@ -31,53 +31,39 @@
  * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY
  * OF SUCH DAMAGE.
  *
- * This file is part of the lwIP TCP/IP stack.
- *
- * Author: Simon Goldschmidt <goldsimon@gmx.de>
- *
+ * Author: Benjamin Aigner <aignerb@technikum-wien.at>
+ * 
+ * Based on the original 6lowpan implementation of lwIP ( @see 6lowpan.c)
  */
-#ifndef LWIP_HDR_ALTCP_MBEDTLS_STRUCTS_H
-#define LWIP_HDR_ALTCP_MBEDTLS_STRUCTS_H
+ 
+#ifndef LWIP_HDR_RFC7668_H
+#define LWIP_HDR_RFC7668_H
 
-#include "lwip/opt.h"
+#include "netif/lowpan6_ble_opts.h"
 
-#if LWIP_ALTCP /* don't build if not configured for use in lwipopts.h */
+#if LWIP_IPV6 && LWIP_RFC7668 /* don't build if not configured for use in lwipopts.h */
 
-#include "lwip/apps/altcp_tls_mbedtls_opts.h"
-
-#if LWIP_ALTCP_TLS && LWIP_ALTCP_TLS_MBEDTLS
-
-#include "lwip/altcp.h"
 #include "lwip/pbuf.h"
-
-#include "mbedtls/ssl.h"
+#include "lwip/ip.h"
+#include "lwip/ip_addr.h"
+#include "lwip/netif.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define ALTCP_MBEDTLS_FLAGS_HANDSHAKE_DONE    0x01
-#define ALTCP_MBEDTLS_FLAGS_UPPER_CALLED      0x02
-#define ALTCP_MBEDTLS_FLAGS_RX_CLOSE_QUEUED   0x04
-#define ALTCP_MBEDTLS_FLAGS_RX_CLOSED         0x08
-#define ALTCP_MBEDTLS_FLAGS_APPLDATA_SENT     0x10
+err_t rfc7668_output(struct netif *netif, struct pbuf *q, const ip6_addr_t *ip6addr);
+err_t rfc7668_input(struct pbuf * p, struct netif *netif, const ip6_addr_t *src);
+err_t rfc7668_if_init(struct netif *netif);
 
-typedef struct altcp_mbedtls_state_s {
-  void *conf;
-  mbedtls_ssl_context ssl_context;
-  /* chain of rx pbufs (before decryption) */
-  struct pbuf *rx;
-  struct pbuf *rx_app;
-  u8_t flags;
-  int rx_passed_unrecved;
-  int bio_bytes_read;
-  int bio_bytes_appl;
-} altcp_mbedtls_state_t;
+
+void ble_addr_to_eui64(uint8_t *dst, uint8_t *src, uint8_t public_addr);
+void eui64_to_ble_addr(uint8_t *dst, uint8_t *src);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* LWIP_ALTCP_TLS && LWIP_ALTCP_TLS_MBEDTLS */
-#endif /* LWIP_ALTCP */
-#endif /* LWIP_HDR_ALTCP_MBEDTLS_STRUCTS_H */
+#endif /* LWIP_IPV6 && LWIP_RFC7668 */
+
+#endif /* LWIP_HDR_RFC7668_H */
