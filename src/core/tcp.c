@@ -1804,7 +1804,9 @@ tcp_alloc(u8_t prio)
   u32_t free;
   int i;
   for (i = 0; i < 3; i++) {
+    uint32_t mask = set_malloc_regions(MALLOC_MASK_DRAM);
     free = xPortGetFreeHeapSize();
+    set_malloc_regions(mask);
     if (free < ESP_TIMEWAIT_THRESHOLD) {
       tcp_kill_timewait();
     }

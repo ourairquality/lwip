@@ -284,7 +284,9 @@ pbuf_alloc(pbuf_layer layer, u16_t length, pbuf_type type)
       }
 
       /* If pbuf is to be allocated in RAM, allocate memory for it. */
+      uint32_t malloc_mask = set_malloc_regions(MALLOC_MASK_DRAM);
       p = (struct pbuf *)mem_malloc(alloc_len);
+      set_malloc_regions(malloc_mask);
       if (p == NULL) {
         return NULL;
       }
