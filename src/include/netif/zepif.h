@@ -1,10 +1,12 @@
 /**
  * @file
- * 6LowPAN options list
+ *
+ * A netif implementing the ZigBee Eencapsulation Protocol (ZEP).
+ * This is used to tunnel 6LowPAN over UDP.
  */
 
 /*
- * Copyright (c) 2015 Inico Technologies Ltd.
+ * Copyright (c) 2018 Simon Goldschmidt
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification,
@@ -31,44 +33,45 @@
  *
  * This file is part of the lwIP TCP/IP stack.
  *
- * Author: Ivan Delamer <delamer@inicotech.com>
+ * Author: Simon Goldschmidt <goldsimon@gmx.de>
  *
- *
- * Please coordinate changes and requests with Ivan Delamer
- * <delamer@inicotech.com>
  */
 
-#ifndef LWIP_HDR_LOWPAN6_OPTS_H
-#define LWIP_HDR_LOWPAN6_OPTS_H
+#ifndef LWIP_HDR_ZEPIF_H
+#define LWIP_HDR_ZEPIF_H
 
 #include "lwip/opt.h"
+#include "netif/lowpan6.h"
 
-#ifndef LWIP_6LOWPAN
-#define LWIP_6LOWPAN                     0
+#if LWIP_IPV6 && LWIP_6LOWPAN /* don't build if not configured for use in lwipopts.h */
+
+#include "lwip/netif.h"
+
+#ifdef __cplusplus
+extern "C" {
 #endif
 
-#ifndef LWIP_6LOWPAN_NUM_CONTEXTS
-#define LWIP_6LOWPAN_NUM_CONTEXTS        10
+#define ZEPIF_DEFAULT_UDP_PORT  17754
+
+/** Pass this struct as 'state' to netif_add to control the behaviour
+ * of this netif. If NULL is passed, default behaviour is chosen */
+struct zepif_init {
+  /** The UDP port used for ZEP frames (0 = default) */
+  u16_t               zep_udp_port;
+  /** The IP address to sed ZEP frames to */
+  const ip_addr_t    *zep_ip_addr;
+  /** If != NULL, the udp pcb is bound to this netif */
+  const struct netif *zep_netif;
+  /** MAC address of the 6LowPAN device */
+  u8_t                addr[6];
+};
+
+err_t zepif_init(struct netif *netif);
+
+#ifdef __cplusplus
+}
 #endif
 
-#ifndef LWIP_6LOWPAN_INFER_SHORT_ADDRESS
-#define LWIP_6LOWPAN_INFER_SHORT_ADDRESS 1
-#endif
+#endif /* LWIP_IPV6 && LWIP_6LOWPAN */
 
-#ifndef LWIP_6LOWPAN_IPHC
-#define LWIP_6LOWPAN_IPHC                1
-#endif
-
-#ifndef LWIP_6LOWPAN_HW_CRC
-#define LWIP_6LOWPAN_HW_CRC              0
-#endif
-
-#ifndef LWIP_6LOWPAN_CALC_CRC
-#define LWIP_6LOWPAN_CALC_CRC(buf, len)  lowpan6_calc_crc(buf, len)
-#endif
-
-#ifndef LOWPAN6_DEBUG
-#define LOWPAN6_DEBUG                    LWIP_DBG_OFF
-#endif
-
-#endif /* LWIP_HDR_LOWPAN6_OPTS_H */
+#endif /* LWIP_HDR_ZEPIF_H */

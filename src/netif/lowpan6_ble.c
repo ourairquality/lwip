@@ -116,6 +116,8 @@ void ble_addr_to_eui64(uint8_t *dst, uint8_t *src, uint8_t public_addr)
   } else {
     dst[0] |= 0x02;
   }
+#else
+  LWIP_UNUSED_ARG(public_addr);
 #endif
 }
 
@@ -152,6 +154,8 @@ rfc7668_context_lookup(const ip6_addr_t *ip6addr)
       return i;
     }
   }
+#else
+  LWIP_UNUSED_ARG(ip6addr);
 #endif
   /* no address found, return -1 */
   return -1;
@@ -384,7 +388,7 @@ rfc7668_frag(struct netif *netif, struct pbuf *p, const ip6_addr_t * src, const 
     }
 
     /* Move to payload. */
-    pbuf_header(p, -IP6_HLEN);
+    pbuf_remove_header(p, IP6_HLEN);
 
     /* Compress UDP header? */
     if (IP6H_NEXTH(ip6hdr) == IP6_NEXTH_UDP) {
@@ -423,7 +427,7 @@ rfc7668_frag(struct netif *netif, struct pbuf *p, const ip6_addr_t * src, const 
       buffer[lowpan6_header_len++] = ((u8_t *)p->payload)[6];
       buffer[lowpan6_header_len++] = ((u8_t *)p->payload)[7];
 
-      pbuf_header(p, -UDP_HLEN);
+      pbuf_remove_header(p, UDP_HLEN);
     }
   }
 
@@ -461,7 +465,7 @@ rfc7668_frag(struct netif *netif, struct pbuf *p, const ip6_addr_t * src, const 
  * @return ERR_OK (if everything is fine), ERR_ARG (if the context id is out of range), ERR_VAL (if contexts disabled)
  */
 err_t
-rfc7668_set_context(u8_t idx, const ip6_addr_t * context)
+rfc7668_set_context(u8_t idx, const ip6_addr_t *context)
 {
 #if LWIP_RFC7668_NUM_CONTEXTS > 0
   /* check if the ID is possible */
@@ -472,6 +476,8 @@ rfc7668_set_context(u8_t idx, const ip6_addr_t * context)
   ip6_addr_set(&rfc7668_context[idx], context);  
   return ERR_OK;
 #else
+  LWIP_UNUSED_ARG(idx);
+  LWIP_UNUSED_ARG(context);
   return ERR_VAL;
 #endif
 }
@@ -669,10 +675,12 @@ rfc7668_decompress(struct pbuf * p, const ip6_addr_t * src, const ip6_addr_t * d
         pbuf_free(q);
         return NULL;
       }
+#if LWIP_RFC7668_NUM_CONTEXTS > 0
       /* load prefix from context storage */
       ip6hdr->src.addr[0] = rfc7668_context[j].addr[0];
       ip6hdr->src.addr[1] = rfc7668_context[j].addr[1];
       LWIP_DEBUGF(LWIP_RFC7668_DEBUG|LWIP_RFC7668_DECOMPRESSION_DEBUG,("SAM == xx, context compression found @%d: %8X, %8X\n", j, ip6hdr->src.addr[0], ip6hdr->src.addr[1]));
+#endif
     }
 
     /* determine further address bits */
@@ -756,9 +764,10 @@ rfc7668_decompress(struct pbuf * p, const ip6_addr_t * src, const ip6_addr_t * d
         pbuf_free(q);
         return NULL;
       }
-
+#if LWIP_RFC7668_NUM_CONTEXTS > 0
       ip6hdr->dest.addr[0] = rfc7668_context[j].addr[0];
       ip6hdr->dest.addr[1] = rfc7668_context[j].addr[1];
+#endif
     } else {
       LWIP_DEBUGF(LWIP_RFC7668_DEBUG|LWIP_RFC7668_DECOMPRESSION_DEBUG,("DAC == 0, stateless compression, setting link local prefix\n"));
       /* Link local address compression */
@@ -891,7 +900,7 @@ rfc7668_input(struct pbuf * p, struct netif *netif, const ip6_addr_t *src)
   if (*puc == 0x41) {
     LWIP_DEBUGF(LWIP_RFC7668_DECOMPRESSION_DEBUG | LWIP_RFC7668_DEBUG, ("Completed packet, removing dispatch: 0x%2x \n", *puc));
     /* This is a complete IPv6 packet, just skip header byte. */
-    pbuf_header(p, -1);
+    pbuf_remove_header(p, 1);
   /* IPHC header compression */
   } else if ((*puc & 0xe0 )== 0x60) {
     LWIP_DEBUGF(LWIP_RFC7668_DECOMPRESSION_DEBUG | LWIP_RFC7668_DEBUG, ("Completed packet, decompress dispatch: 0x%2x \n", *puc));

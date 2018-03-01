@@ -53,9 +53,9 @@
 #define LWIP_RFC7668_NUM_CONTEXTS             10
 #endif
 
-/** LWIP_RFC7668_DEBUG: Enable generic debugging in rfc7668.c. */
+/** LWIP_RFC7668_DEBUG: Enable generic debugging in lowpan6_ble.c. */
 #ifndef LWIP_RFC7668_DEBUG
-#define LWIP_RFC7668_DEBUG                    LWIP_DBG_ON
+#define LWIP_RFC7668_DEBUG                    LWIP_DBG_OFF
 #endif
 
 /** LWIP_RFC7668_IP_COMPRESSED_DEBUG: enable compressed IP frame
@@ -80,6 +80,8 @@
  * the address, depending on the BD address (either public or not).
  * Might not be RFC7668 conform, so you may select to do that (=1) or 
  * not (=0) */
+#ifndef LWIP_RFC7668_LINUX_WORKAROUND_PUBLIC_ADDRESS
 #define LWIP_RFC7668_LINUX_WORKAROUND_PUBLIC_ADDRESS 1
+#endif
 
 #endif /* LWIP_HDR_RFC7668_OPTS_H */
