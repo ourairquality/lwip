@@ -1,12 +1,11 @@
 /**
  * @file
- * 6LowPAN over BLE for IPv6 (RFC7668).
+ *
+ * Common 6LowPAN routines for IPv6. Uses ND tables for link-layer addressing. Fragments packets to 6LowPAN units.
  */
 
 /*
- * Copyright (c) 2017 Benjamin Aigner
- * Copyright (c) 2015 Inico Technologies Ltd. , Author: Ivan Delamer <delamer@inicotech.com>
- * 
+ * Copyright (c) 2015 Inico Technologies Ltd.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without modification,
@@ -31,43 +30,48 @@
  * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY
  * OF SUCH DAMAGE.
  *
- * Author: Benjamin Aigner <aignerb@technikum-wien.at>
- * 
- * Based on the original 6lowpan implementation of lwIP ( @see 6lowpan.c)
+ * This file is part of the lwIP TCP/IP stack.
+ *
+ * Author: Ivan Delamer <delamer@inicotech.com>
+ *
+ *
+ * Please coordinate changes and requests with Ivan Delamer
+ * <delamer@inicotech.com>
  */
- 
-#ifndef LWIP_HDR_LOWPAN6_BLE_H
-#define LWIP_HDR_LOWPAN6_BLE_H
+
+#ifndef LWIP_HDR_LOWPAN6_COMMON_H
+#define LWIP_HDR_LOWPAN6_COMMON_H
 
 #include "netif/lowpan6_opts.h"
 
-#if LWIP_IPV6 /* don't build if not configured for use in lwipopts.h */
+#if LWIP_IPV6 /* don't build if IPv6 is disabled in lwipopts.h */
 
-#include "netif/lowpan6_common.h"
 #include "lwip/pbuf.h"
 #include "lwip/ip.h"
-#include "lwip/ip_addr.h"
+#include "lwip/ip6_addr.h"
 #include "lwip/netif.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-err_t rfc7668_output(struct netif *netif, struct pbuf *q, const ip6_addr_t *ip6addr);
-err_t rfc7668_input(struct pbuf * p, struct netif *netif);
-err_t rfc7668_set_local_addr_eui64(struct netif *netif, const u8_t *local_addr, size_t local_addr_len);
-err_t rfc7668_set_local_addr_mac48(struct netif *netif, const u8_t *local_addr, size_t local_addr_len, int is_public_addr);
-err_t rfc7668_set_peer_addr_eui64(struct netif *netif, const u8_t *peer_addr, size_t peer_addr_len);
-err_t rfc7668_set_peer_addr_mac48(struct netif *netif, const u8_t *peer_addr, size_t peer_addr_len, int is_public_addr);
-err_t rfc7668_set_context(u8_t index, const ip6_addr_t * context);
-err_t rfc7668_if_init(struct netif *netif);
+/** Helper define for a link layer address, which can be encoded as 0, 2 or 8 bytes */
+struct lowpan6_link_addr {
+  /* encoded length of the address */
+  u8_t addr_len;
+  /* address bytes */
+  u8_t addr[8];
+};
 
-#if !NO_SYS
-err_t tcpip_rfc7668_input(struct pbuf *p, struct netif *inp);
-#endif
+s8_t lowpan6_get_address_mode(const ip6_addr_t *ip6addr, const struct lowpan6_link_addr *mac_addr);
 
-void ble_addr_to_eui64(uint8_t *dst, const uint8_t *src, int public_addr);
-void eui64_to_ble_addr(uint8_t *dst, const uint8_t *src);
+#if LWIP_6LOWPAN_IPHC
+err_t lowpan6_compress_headers(struct netif *netif, u8_t *inbuf, size_t inbuf_size, u8_t *outbuf, size_t outbuf_size,
+                               u8_t *lowpan6_header_len_out, u8_t *hidden_header_len_out, ip6_addr_t *lowpan6_contexts,
+                               const struct lowpan6_link_addr *src, const struct lowpan6_link_addr *dst);
+struct pbuf *lowpan6_decompress(struct pbuf *p, u16_t datagram_size, ip6_addr_t *lowpan6_contexts,
+                                struct lowpan6_link_addr *src, struct lowpan6_link_addr *dest);
+#endif /* LWIP_6LOWPAN_IPHC */
 
 #ifdef __cplusplus
 }
@@ -75,4 +79,4 @@ void eui64_to_ble_addr(uint8_t *dst, const uint8_t *src);
 
 #endif /* LWIP_IPV6 */
 
-#endif /* LWIP_HDR_LOWPAN6_BLE_H */
+#endif /* LWIP_HDR_LOWPAN6_COMMON_H */
