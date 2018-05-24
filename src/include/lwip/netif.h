@@ -237,10 +237,18 @@ u8_t netif_alloc_client_data_id(void);
 #define netif_get_client_data(netif, id)       (netif)->client_data[(id)]
 #endif
 
+#if (LWIP_IPV4 && LWIP_ARP && (ARP_TABLE_SIZE > 0x7f)) || (LWIP_IPV6 && (LWIP_ND6_NUM_DESTINATIONS > 0x7f))
+typedef u16_t netif_addr_idx_t;
+#define NETIF_ADDR_IDX_MAX 0x7FFF
+#else
+typedef u8_t netif_addr_idx_t;
+#define NETIF_ADDR_IDX_MAX 0x7F
+#endif
+
 #if LWIP_NETIF_HWADDRHINT
 #define LWIP_NETIF_USE_HINTS              1
 struct netif_hint {
-  u8_t addr_hint;
+  netif_addr_idx_t addr_hint;
 };
 #else /* LWIP_NETIF_HWADDRHINT */
 #define LWIP_NETIF_USE_HINTS              0

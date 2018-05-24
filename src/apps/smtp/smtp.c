@@ -292,7 +292,9 @@ static char smtp_auth_plain[SMTP_MAX_USERNAME_LEN + SMTP_MAX_PASS_LEN + 3];
 /** Length of smtp_auth_plain string (cannot use strlen since it includes \0) */
 static size_t smtp_auth_plain_len;
 
+#if SMTP_CHECK_DATA
 static err_t  smtp_verify(const char *data, size_t data_len, u8_t linebreaks_allowed);
+#endif /* SMTP_CHECK_DATA */
 static err_t  smtp_tcp_recv(void *arg, struct altcp_pcb *pcb, struct pbuf *p, err_t err);
 static void   smtp_tcp_err(void *arg, err_t err);
 static err_t  smtp_tcp_poll(void *arg, struct altcp_pcb *pcb);
@@ -301,7 +303,9 @@ static err_t  smtp_tcp_connected(void *arg, struct altcp_pcb *pcb, err_t err);
 #if LWIP_DNS
 static void   smtp_dns_found(const char* hostname, const ip_addr_t *ipaddr, void *arg);
 #endif /* LWIP_DNS */
+#if SMTP_SUPPORT_AUTH_PLAIN || SMTP_SUPPORT_AUTH_LOGIN
 static size_t smtp_base64_encode(char* target, size_t target_len, const char* source, size_t source_len);
+#endif /* SMTP_SUPPORT_AUTH_PLAIN || SMTP_SUPPORT_AUTH_LOGIN */
 static enum   smtp_session_state smtp_prepare_mail(struct smtp_session *s, u16_t *tx_buf_len);
 static void   smtp_send_body(struct smtp_session *s, struct altcp_pcb *pcb);
 static void   smtp_process(void *arg, struct altcp_pcb *pcb, struct pbuf *p);
