@@ -220,7 +220,7 @@ static char netbiosns_local_name[NETBIOS_NAME_LEN];
 #define NETBIOS_LOCAL_NAME netbiosns_local_name
 #endif
 
-struct udp_pcb *netbiosns_pcb;
+static struct udp_pcb *netbiosns_pcb;
 
 /** Decode a NetBIOS name (from packet to string) */
 static int
@@ -245,7 +245,7 @@ netbiosns_name_decode(char *name_enc, char *name_dec, int name_dec_len)
     if (cname == '.') {
       break;  /* scope ID follows */
     }
-    if (cname < 'A' || cname > 'Z') {
+    if (!lwip_isupper(cname)) {
       /* Not legal. */
       return -1;
     }
@@ -254,12 +254,7 @@ netbiosns_name_decode(char *name_enc, char *name_dec, int name_dec_len)
     pname++;
 
     cname = *pname;
-    if (cname == '\0' || cname == '.') {
-      /* No more characters in the name - but we're in
-       * the middle of a pair.  Not legal. */
-      return -1;
-    }
-    if (cname < 'A' || cname > 'Z') {
+    if (!lwip_isupper(cname)) {
       /* Not legal. */
       return -1;
     }
@@ -499,7 +494,7 @@ netbiosns_set_name(const char *hostname)
 
   /* make name into upper case */
   for (i = 0; i < copy_len; i++ ) {
-    netbiosns_local_name[i] = (char)toupper((unsigned char)hostname[i]);
+    netbiosns_local_name[i] = (char)lwip_toupper(hostname[i]);
   }
   netbiosns_local_name[copy_len] = '\0';
 }
