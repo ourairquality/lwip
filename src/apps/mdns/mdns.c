@@ -13,7 +13,6 @@
  * Things left to implement:
  * -------------------------
  *
- * - Probing/conflict resolution
  * - Tiebreaking for simultaneous probing
  * - Sending goodbye messages (zero ttl) - shutdown, DHCP lease about to expire, DHCP turned off...
  * - Checking that source address of unicast requests are on the same network
@@ -421,7 +420,7 @@ struct mdns_answer {
   u16_t rd_offset;
 };
 
-static err_t mdns_send_outpacket(struct mdns_outpacket *outpkt, int now, u8_t flags);
+static err_t mdns_send_outpacket(struct mdns_outpacket *outpkt, u8_t flags, int now);
 static void mdns_probe(void* arg);
 
 static struct mdns_answer *
@@ -716,7 +715,7 @@ mdns_build_reverse_v4_domain(const ip4_addr_t *addr)
   LWIP_ERROR("mdns_build_reverse_v4_domain: Failed to add label", (res == ERR_OK), goto err);
   return domain;
 
- err:;
+ err:
   mdns_domain_free(domain);
   return NULL;
 }
@@ -770,7 +769,7 @@ mdns_build_reverse_v6_domain(const ip6_addr_t *addr)
 
   return domain;
 
- err:;
+ err:
   mdns_domain_free(domain);
   return NULL;
 }
@@ -808,7 +807,7 @@ mdns_build_host_domain(struct mdns_host *mdns)
   LWIP_ERROR("mdns_build_host_domain: Failed to add dot", (res == ERR_OK), goto err);
   return domain;
 
- err:;
+ err:
   mdns_domain_free(domain);
   return NULL;
 }
@@ -838,7 +837,7 @@ mdns_build_dnssd_domain(void)
   LWIP_ERROR("mdns_build_dnssd_domain: Failed to add dot", (res == ERR_OK), goto err);
   return domain;
 
- err:;
+ err:
   mdns_domain_free(domain);
   return NULL;
 }
@@ -873,7 +872,7 @@ mdns_build_service_domain(struct mdns_service *service, int include_name)
   LWIP_ERROR("mdns_build_service_domain: Failed to add dot", (res == ERR_OK), goto err);
   return domain;
 
- err:;
+ err:
   mdns_domain_free(domain);
   return NULL;
 }
@@ -1671,6 +1670,26 @@ mdns_flush_async_outpacket(void)
 }
 
 /**
+ * Cancel any delayed response
+ */
+static void
+mdns_async_cancel_outpacket()
+{
+  struct mdns_async_outpacket *outpkt = mdns_async_outpacket;
+
+  if (outpkt) {
+    struct pbuf *p = outpkt->pbuf;
+    /* Send delayed packet */
+    LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Cancle async packet\n"));
+    mdns_async_outpacket = NULL;
+    pbuf_free(p);
+    outpkt->pbuf = NULL;
+    mem_free(outpkt);
+  }
+}
+
+
+/**
  * Send chosen answers as a reply
  *
  * Add all selected answers (first write will allocate pbuf)
@@ -1678,7 +1697,7 @@ mdns_flush_async_outpacket(void)
  * Send the packet
  */
 static err_t
-mdns_send_outpacket(struct mdns_outpacket *outpkt, int now, u8_t flags)
+mdns_send_outpacket(struct mdns_outpacket *outpkt, u8_t flags, int now)
 {
   struct mdns_service *service;
   err_t res = ERR_ARG;
@@ -1910,6 +1929,7 @@ mdns_send_outpacket(struct mdns_outpacket *outpkt, int now, u8_t flags)
         LWIP_ASSERT("mdns_send_outpacket: outpacket", mdns_async_outpacket == NULL);
         mdns_async_outpacket = async_outpkt;
         sys_timeout(msecs, mdns_async_send_outpacket, async_outpkt);
+        res = ERR_OK;
       }
     } else {
       /* Immediately send created packet */
@@ -1969,7 +1989,7 @@ mdns_announce(struct netif *netif, const ip_addr_t *destination)
 
   announce->dest_port = LWIP_IANA_PORT_MDNS;
   ip_addr_copy(announce->dest_addr, *destination);
-  mdns_send_outpacket(announce, 1, DNS_FLAG1_RESPONSE | DNS_FLAG1_AUTHORATIVE);
+  mdns_send_outpacket(announce, DNS_FLAG1_RESPONSE | DNS_FLAG1_AUTHORATIVE, 1);
   mem_free(announce);
 }
 
@@ -2225,7 +2245,7 @@ mdns_handle_question(struct mdns_packet *pkt)
     mdns_answer_free(ans);
   }
 
-  mdns_send_outpacket(reply, 0, DNS_FLAG1_RESPONSE | DNS_FLAG1_AUTHORATIVE);
+  mdns_send_outpacket(reply, DNS_FLAG1_RESPONSE | DNS_FLAG1_AUTHORATIVE, 0);
 
 cleanup:
   if (reply->pbuf) {
@@ -2493,8 +2513,8 @@ mdns_send_probe(struct netif* netif, const ip_addr_t *destination)
 
   pkt->tx_id = 0;
   pkt->dest_port = LWIP_IANA_PORT_MDNS;
-  SMEMCPY(pkt->dest_addr, destination, sizeof(pkt->dest_addr));
-  res = mdns_send_outpacket(pkt, 1, 0);
+  SMEMCPY(&pkt->dest_addr, destination, sizeof(pkt->dest_addr));
+  res = mdns_send_outpacket(pkt, 0, 1);
 
 cleanup:
   if (pkt->pbuf) {
@@ -2615,6 +2635,9 @@ mdns_resp_remove_netif(struct netif *netif)
 
   mdns = NETIF_TO_HOST(netif);
   LWIP_ERROR("mdns_resp_remove_netif: Not an active netif", (mdns != NULL), return ERR_VAL);
+
+  /* Cancel any pending async output packets. */
+  mdns_async_cancel_outpacket();
 
   if (mdns->probing_state == MDNS_PROBING_ONGOING) {
     sys_untimeout(mdns_probe, netif);
@@ -2760,34 +2783,6 @@ mdns_resp_del_service(struct netif *netif, s8_t slot)
 
 /**
  * @ingroup mdns
- * Call this function from inside the service_get_txt_fn_t callback to add text data.
- * Buffer for TXT data is 256 bytes, and each field is prefixed with a length byte.
- * @param service The service provided to the get_txt callback
- * @param txt String to add to the TXT field.
- * @param txt_len Length of string
- * @return ERR_OK if the string was added to the reply, an err_t otherwise
- */
-err_t
-mdns_resp_add_service_txtitem(struct mdns_service *service, const char *txt, u8_t txt_len)
-{
-  struct mdns_domain *txtdata;
-  LWIP_ASSERT_CORE_LOCKED();
-  LWIP_ASSERT("mdns_resp_add_service_txtitem: service != NULL", service);
-
-  /* Use a mdns_domain struct to store txt chunks since it is the same encoding */
-  txtdata = service->txtdata;
-  if (txtdata == NULL) {
-    txtdata = mdns_domain_alloc();
-    service->txtdata = txtdata;
-  }
-  if (txtdata == NULL) {
-    return ERR_MEM;
-  }
-  return mdns_domain_add_label(txtdata, txt, txt_len);
-}
-
-/**
- * @ingroup mdns
  * Update name for an MDNS service.
  * @param netif The network interface to activate.
  * @param slot The service slot number returned by mdns_resp_add_service
@@ -2820,6 +2815,34 @@ mdns_resp_rename_service(struct netif *netif, s8_t slot, const char *name)
   mdns_resp_restart(netif);
 
   return ERR_OK;
+}
+
+/**
+ * @ingroup mdns
+ * Call this function from inside the service_get_txt_fn_t callback to add text data.
+ * Buffer for TXT data is 256 bytes, and each field is prefixed with a length byte.
+ * @param service The service provided to the get_txt callback
+ * @param txt String to add to the TXT field.
+ * @param txt_len Length of string
+ * @return ERR_OK if the string was added to the reply, an err_t otherwise
+ */
+err_t
+mdns_resp_add_service_txtitem(struct mdns_service *service, const char *txt, u8_t txt_len)
+{
+  struct mdns_domain *txtdata;
+  LWIP_ASSERT_CORE_LOCKED();
+  LWIP_ASSERT("mdns_resp_add_service_txtitem: service != NULL", service);
+
+  /* Use a mdns_domain struct to store txt chunks since it is the same encoding */
+  txtdata = service->txtdata;
+  if (txtdata == NULL) {
+    txtdata = mdns_domain_alloc();
+    service->txtdata = txtdata;
+  }
+  if (txtdata == NULL) {
+    return ERR_MEM;
+  }
+  return mdns_domain_add_label(txtdata, txt, txt_len);
 }
 
 static volatile u8_t mdns_announce_pending;
@@ -2904,6 +2927,9 @@ mdns_resp_restart(struct netif *netif)
   if (mdns == NULL) {
     return;
   }
+
+  /* Cancel any pending async output packets. */
+  mdns_async_cancel_outpacket();
 
   if (mdns->probing_state == MDNS_PROBING_ONGOING) {
     sys_untimeout(mdns_probe, netif);
