@@ -9,15 +9,26 @@
 # create their own targets using the *_SRCS variables.
 
 set(LWIP_VERSION_MAJOR    "2")
-set(LWIP_VERSION_MINOR    "0")
-set(LWIP_VERSION_REVISION "3")
-# LWIP_VERSION_RC is set to LWIP_RC_RELEASE for official releases */
-# LWIP_VERSION_RC is set to LWIP_RC_DEVELOPMENT for Git versions */
-set(LWIP_VERSION_RC       "LWIP_RC_DEVELOPMENT")
+set(LWIP_VERSION_MINOR    "1")
+set(LWIP_VERSION_REVISION "0")
+# LWIP_VERSION_RC is set to LWIP_RC_RELEASE for official releases
+# LWIP_VERSION_RC is set to LWIP_RC_DEVELOPMENT for Git versions
+# Numbers 1..31 are reserved for release candidates
+set(LWIP_VERSION_RC       "1")
 
-set(LWIP_VERSION_STRING
-    "${LWIP_VERSION_MAJOR}.${LWIP_VERSION_MINOR}.${LWIP_VERSION_REVISION}"
-)
+if ("${LWIP_VERSION_RC}" STREQUAL "LWIP_RC_RELEASE")
+    set(LWIP_VERSION_STRING
+        "${LWIP_VERSION_MAJOR}.${LWIP_VERSION_MINOR}.${LWIP_VERSION_REVISION}"
+    )
+elseif ("${LWIP_VERSION_RC}" STREQUAL "LWIP_RC_DEVELOPMENT")
+    set(LWIP_VERSION_STRING
+        "${LWIP_VERSION_MAJOR}.${LWIP_VERSION_MINOR}.${LWIP_VERSION_REVISION}.dev"
+    )
+else ("${LWIP_VERSION_RC}" STREQUAL "LWIP_RC_RELEASE")
+    set(LWIP_VERSION_STRING
+        "${LWIP_VERSION_MAJOR}.${LWIP_VERSION_MINOR}.${LWIP_VERSION_REVISION}.rc${LWIP_VERSION_RC}"
+    )
+endif ("${LWIP_VERSION_RC}" STREQUAL "LWIP_RC_RELEASE")
 
 # The minimum set of files needed for lwIP.
 set(lwipcore_SRCS
