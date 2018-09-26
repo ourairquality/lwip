@@ -257,21 +257,23 @@ find_package(Doxygen)
 if (DOXYGEN_FOUND)
     message("Doxygen build started")
 
-    add_custom_target(lwipdocs EXCLUDE_FROM_ALL
+    add_custom_target(lwipdocs
+        COMMAND ${CMAKE_COMMAND} -E remove_directory ${DOXYGEN_DIR}/${DOXYGEN_OUTPUT_DIR}/html
         COMMAND ${DOXYGEN_EXECUTABLE} ${DOXYGEN_OUT}
         WORKING_DIRECTORY ${DOXYGEN_DIR}
         COMMENT "Generating API documentation with Doxygen"
         VERBATIM)
-
-    # Remove old docs before generating new ones to prevent stale files
-    add_custom_command(TARGET lwipdocs
-        PRE_BUILD
-        COMMAND ${CMAKE_COMMAND} -E remove_directory ${DOXYGEN_DIR}/${DOXYGEN_OUTPUT_DIR}/html
-)
 else (DOXYGEN_FOUND)
     message("Doxygen needs to be installed to generate the doxygen documentation")
 endif (DOXYGEN_FOUND)
 
 # lwIP libraries
 add_library(lwipcore EXCLUDE_FROM_ALL ${lwipnoapps_SRCS})
+target_compile_options(lwipcore PRIVATE ${LWIP_COMPILER_FLAGS})
+target_compile_definitions(lwipcore PRIVATE ${LWIP_DEFINITIONS}  ${LWIP_MBEDTLS_DEFINITIONS})
+target_include_directories(lwipcore PRIVATE ${LWIP_INCLUDE_DIRS} ${LWIP_MBEDTLS_INCLUDE_DIRS})
+
 add_library(lwipallapps EXCLUDE_FROM_ALL ${lwipallapps_SRCS})
+target_compile_options(lwipallapps PRIVATE ${LWIP_COMPILER_FLAGS})
+target_compile_definitions(lwipallapps PRIVATE ${LWIP_DEFINITIONS}  ${LWIP_MBEDTLS_DEFINITIONS})
+target_include_directories(lwipallapps PRIVATE ${LWIP_INCLUDE_DIRS} ${LWIP_MBEDTLS_INCLUDE_DIRS})
