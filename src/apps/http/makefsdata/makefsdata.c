@@ -81,6 +81,10 @@ int deflate_level = 10; /* default compression level, can be changed via command
 #define NEWLINE     "\r\n"
 #define NEWLINE_LEN 2
 
+/* Define this here since we don't include any external C files and ports might override it */
+#define LWIP_PLATFORM_ASSERT(x) do {printf("Assertion \"%s\" failed at line %d in %s\n", \
+                                     x, __LINE__, __FILE__); fflush(NULL); abort();} while(0)
+
 /* define this to get the header variables we use to build HTTP headers */
 #define LWIP_HTTPD_DYNAMIC_HEADERS 1
 #define LWIP_HTTPD_SSI             1
@@ -853,6 +857,7 @@ static int is_ssi_file(const char *filename)
       }
       curSubdir[sublen] = 0;
       return ret;
+#if LWIP_HTTPD_SSI_BY_FILE_EXTENSION
     } else {
       /* check file extension */
       size_t loop;
@@ -861,6 +866,7 @@ static int is_ssi_file(const char *filename)
           return 1;
         }
       }
+#endif /* LWIP_HTTPD_SSI_BY_FILE_EXTENSION */
     }
   }
   return 0;
