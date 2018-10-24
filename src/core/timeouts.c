@@ -239,18 +239,7 @@ lwip_cyclic_timer(void *arg)
 #endif
   cyclic->handler();
 
-  now = sys_now();
-  next_timeout_time = (u32_t)(current_timeout_due_time + cyclic->interval_ms);  /* overflow handled by TIME_LESS_THAN macro */
-  if (TIME_LESS_THAN(next_timeout_time, now)) {
-    /* timer would immediately expire again -> "overload" -> restart without any correction */
-#if LWIP_DEBUG_TIMERNAMES
-    sys_timeout_abs((u32_t)(now + cyclic->interval_ms), lwip_cyclic_timer, arg, cyclic->handler_name);
-#else
-    sys_timeout_abs((u32_t)(now + cyclic->interval_ms), lwip_cyclic_timer, arg);
-#endif
-
-  } else {
-    /* correct cyclic interval with handler execution delay and sys_check_timeouts jitter */
+  next_timeout_time = (u32_t)(current_timeout_due_time + cyclic->interval_ms);
 #if LWIP_DEBUG_TIMERNAMES
   sys_timeout_abs(next_timeout_time, lwip_cyclic_timer, arg, cyclic->handler_name);
 #else
