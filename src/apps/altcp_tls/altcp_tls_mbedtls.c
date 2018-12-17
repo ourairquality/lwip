@@ -40,17 +40,13 @@
  *   track of the ratio of application data and TLS overhead would be too much.
  *
  * Mandatory security-related configuration:
- * - define ALTCP_MBEDTLS_RNG_FN to a custom GOOD rng function returning 0 on success:
- *   int my_rng_fn(void *ctx, unsigned char *buffer , size_t len)
+ * - ensure to add at least one strong entropy source to your mbedtls port (implement
+ *   mbedtls_platform_entropy_poll or mbedtls_hardware_poll providing strong entropy)
  * - define ALTCP_MBEDTLS_ENTROPY_PTR and ALTCP_MBEDTLS_ENTROPY_LEN to something providing
  *   GOOD custom entropy
  *
  * Missing things / @todo:
- * - RX data is acknowledged after receiving (tcp_recved is called when enqueueing
- *   the pbuf for mbedTLS receive, not when processed by mbedTLS or the inner
- *   connection; altcp_recved() from inner connection does nothing)
- * - Client connections starting with 'connect()' are not handled yet...
- * - some unhandled things are caught by LWIP_ASSERTs...
+ * - some unhandled/untested things migh be caught by LWIP_ASSERTs...
  */
 
 #include "lwip/opt.h"
@@ -309,17 +305,20 @@ altcp_mbedtls_pass_rx_data(struct altcp_pcb *conn, altcp_mbedtls_state_t *state)
   LWIP_ASSERT("state != NULL", state != NULL);
   buf = state->rx_app;
   if (buf) {
+    state->rx_app = NULL;
     if (conn->recv) {
-      u16_t tot_len = state->rx_app->tot_len;
+      u16_t tot_len = buf->tot_len;
       /* this needs to be increased first because the 'recved' call may come nested */
       state->rx_passed_unrecved += tot_len;
       state->flags |= ALTCP_MBEDTLS_FLAGS_UPPER_CALLED;
-      err = conn->recv(conn->arg, conn, state->rx_app, ERR_OK);
+      err = conn->recv(conn->arg, conn, buf, ERR_OK);
       if (err != ERR_OK) {
         if (err == ERR_ABRT) {
           return ERR_ABRT;
         }
         /* not received, leave the pbuf(s) queued (and decrease 'unrecved' again) */
+        LWIP_ASSERT("state == conn->state", state == conn->state);
+        state->rx_app = buf;
         state->rx_passed_unrecved -= tot_len;
         LWIP_ASSERT("state->rx_passed_unrecved >= 0", state->rx_passed_unrecved >= 0);
         if (state->rx_passed_unrecved < 0) {
@@ -330,7 +329,6 @@ altcp_mbedtls_pass_rx_data(struct altcp_pcb *conn, altcp_mbedtls_state_t *state)
     } else {
       pbuf_free(buf);
     }
-    state->rx_app = NULL;
   } else if ((state->flags & (ALTCP_MBEDTLS_FLAGS_RX_CLOSE_QUEUED | ALTCP_MBEDTLS_FLAGS_RX_CLOSED)) ==
              ALTCP_MBEDTLS_FLAGS_RX_CLOSE_QUEUED) {
     state->flags |= ALTCP_MBEDTLS_FLAGS_RX_CLOSED;
@@ -339,6 +337,11 @@ altcp_mbedtls_pass_rx_data(struct altcp_pcb *conn, altcp_mbedtls_state_t *state)
     }
   }
 
+  /* application may have close the connection */
+  if (conn->state != state) {
+    /* return error code to ensure altcp_mbedtls_handle_rx_appldata() exits the loop */
+    return ERR_CLSD;
+  }
   return ERR_OK;
 }
 
@@ -644,22 +647,6 @@ altcp_mbedtls_debug(void *ctx, int level, const char *file, int line, const char
 }
 #endif
 
-#ifndef ALTCP_MBEDTLS_RNG_FN
-/** ATTENTION: It is *really* important to *NOT* use this dummy RNG in production code!!!! */
-static int
-dummy_rng(void *ctx, unsigned char *buffer, size_t len)
-{
-  static size_t ctr;
-  size_t i;
-  LWIP_UNUSED_ARG(ctx);
-  for (i = 0; i < len; i++) {
-    buffer[i] = (unsigned char)++ctr;
-  }
-  return 0;
-}
-#define ALTCP_MBEDTLS_RNG_FN dummy_rng
-#endif /* ALTCP_MBEDTLS_RNG_FN */
-
 /** Create new TLS configuration
  * ATTENTION: Server certificate and private key have to be added outside this function!
  */
@@ -711,7 +698,7 @@ altcp_tls_create_config(int is_server, int have_cert, int have_pkey, int have_ca
   mbedtls_ctr_drbg_init(&conf->ctr_drbg);
 
   /* Seed the RNG */
-  ret = mbedtls_ctr_drbg_seed(&conf->ctr_drbg, ALTCP_MBEDTLS_RNG_FN, &conf->entropy, ALTCP_MBEDTLS_ENTROPY_PTR, ALTCP_MBEDTLS_ENTROPY_LEN);
+  ret = mbedtls_ctr_drbg_seed(&conf->ctr_drbg, mbedtls_entropy_func, &conf->entropy, ALTCP_MBEDTLS_ENTROPY_PTR, ALTCP_MBEDTLS_ENTROPY_LEN);
   if (ret != 0) {
     LWIP_DEBUGF(ALTCP_MBEDTLS_DEBUG, ("mbedtls_ctr_drbg_seed failed: %d\n", ret));
     altcp_mbedtls_free_config(conf);

@@ -184,10 +184,10 @@ ip4_route(const ip4_addr_t *dest)
   }
 
 #if LWIP_NETIF_LOOPBACK && !LWIP_HAVE_LOOPIF
-  /* loopif is disabled, looopback traffic is passed through any netif */
+  /* loopif is disabled, loopback traffic is passed through any netif */
   if (ip4_addr_isloopback(dest)) {
     /* don't check for link on loopback traffic */
-    if (netif_default != NULL && netif_is_up(netif_default)) {
+    if ((netif_default != NULL) && netif_is_up(netif_default)) {
       return netif_default;
     }
     /* default netif is not up, just use any netif for loopback traffic */
@@ -214,7 +214,7 @@ ip4_route(const ip4_addr_t *dest)
 #endif /* !LWIP_SINGLE_NETIF */
 
   if ((netif_default == NULL) || !netif_is_up(netif_default) || !netif_is_link_up(netif_default) ||
-      ip4_addr_isany_val(*netif_ip4_addr(netif_default))) {
+      ip4_addr_isany_val(*netif_ip4_addr(netif_default)) || ip4_addr_isloopback(dest)) {
     /* No matching netif found and default netif is not usable.
        If this is not good enough for you, use LWIP_HOOK_IP4_ROUTE() */
     LWIP_DEBUGF(IP_DEBUG | LWIP_DBG_LEVEL_SERIOUS, ("ip4_route: No route to %"U16_F".%"U16_F".%"U16_F".%"U16_F"\n",
