@@ -2,6 +2,12 @@ if(NOT ${CMAKE_VERSION} VERSION_LESS "3.10.0")
     include_guard(GLOBAL)
 endif()
 
+if(NOT CMAKE_BUILD_TYPE)
+    message(STATUS  "CMAKE_BUILD_TYPE not set - defaulting to Debug build.")
+    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Choose the type of build, options are: ${CMAKE_CONFIGURATION_TYPES}." FORCE)
+endif()
+message (STATUS "Build type: ${CMAKE_BUILD_TYPE}")
+
 set(LWIP_CONTRIB_DIR ${LWIP_DIR}/contrib)
 
 # ARM mbedtls support https://tls.mbed.org/
@@ -33,7 +39,9 @@ if(EXISTS ${LWIP_MBEDTLSDIR}/CMakeLists.txt)
 endif()
 
 set(LWIP_COMPILER_FLAGS_GNU_CLANG
-    -g
+    $<$<CONFIG:Debug>:-Og>
+    $<$<CONFIG:Debug>:-g>
+    $<$<CONFIG:Release>:-O3>
     -Wall
     -pedantic
     -Werror
@@ -45,12 +53,11 @@ set(LWIP_COMPILER_FLAGS_GNU_CLANG
     -Wshadow
     -Wpointer-arith
     -Wcast-qual
-    -Wc++-compat
     -Wwrite-strings
-    -Wold-style-definition
+     $<$<COMPILE_LANGUAGE:C>:-Wold-style-definition>
     -Wcast-align
-    -Wmissing-prototypes
-    -Wnested-externs
+     $<$<COMPILE_LANGUAGE:C>:-Wmissing-prototypes>
+     $<$<COMPILE_LANGUAGE:C>:-Wnested-externs>
     -Wunreachable-code
     -Wuninitialized
     -Wmissing-prototypes
@@ -61,10 +68,11 @@ set(LWIP_COMPILER_FLAGS_GNU_CLANG
 if (NOT LWIP_HAVE_MBEDTLS)
     list(APPEND LWIP_COMPILER_FLAGS_GNU_CLANG
         -Wredundant-decls
+        $<$<COMPILE_LANGUAGE:C>:-Wc++-compat>
     )
 endif()
 
-if(CMAKE_C_COMPILER_ID STREQUAL GNU)
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     list(APPEND LWIP_COMPILER_FLAGS_GNU_CLANG
         -Wlogical-op
         -Wtrampolines
@@ -72,7 +80,7 @@ if(CMAKE_C_COMPILER_ID STREQUAL GNU)
 
     if (NOT LWIP_HAVE_MBEDTLS)
         list(APPEND LWIP_COMPILER_FLAGS_GNU_CLANG
-            -Wc90-c99-compat
+            $<$<COMPILE_LANGUAGE:C>:-Wc90-c99-compat>
         )
     endif()
 
@@ -92,7 +100,7 @@ if(CMAKE_C_COMPILER_ID STREQUAL GNU)
     set(LWIP_COMPILER_FLAGS ${LWIP_COMPILER_FLAGS_GNU_CLANG})
 endif()
 
-if(CMAKE_C_COMPILER_ID STREQUAL Clang)
+if(CMAKE_C_COMPILER_ID STREQUAL "Clang")
     list(APPEND LWIP_COMPILER_FLAGS_GNU_CLANG
         -Wdocumentation
         -Wno-documentation-deprecated-sync
@@ -110,6 +118,11 @@ if(CMAKE_C_COMPILER_ID STREQUAL Clang)
     set(LWIP_COMPILER_FLAGS ${LWIP_COMPILER_FLAGS_GNU_CLANG})
 endif()
 
-if(CMAKE_C_COMPILER_ID STREQUAL MSVC)
-    # TODO
+if(CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+    set(LWIP_COMPILER_FLAGS
+        $<$<CONFIG:Debug>:/Od>
+        $<$<CONFIG:Release>:/Ox>
+        /Wall
+        /WX
+    )
 endif()

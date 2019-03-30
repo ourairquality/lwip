@@ -225,13 +225,8 @@ struct pbuf {
   /** For incoming packets, this contains the input netif's index */
   u8_t if_idx;
 
-#ifdef ESP_OPEN_RTOS
-  /**
-   * The ESP SDK stores a pointer to a esf_buf here. The only use in lwip
-   * is in pbuf_free which calls sdk_system_pp_recycle_rx_pkt(p->esf_buf).
-   */
-  void *esf_buf;
-#endif
+  /** In case the user needs to store data custom data on a pbuf */
+  LWIP_PBUF_CUSTOM_DATA
 };
 
 

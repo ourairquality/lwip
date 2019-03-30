@@ -68,16 +68,22 @@
 #include "lwip/stats.h"
 #include "lwip/tcpip.h"
 
+u32_t
+lwip_port_rand(void)
+{
+  return (u32_t)rand();
+}
+
 static void
 get_monotonic_time(struct timespec *ts)
 {
 #ifdef LWIP_UNIX_MACH
   /* darwin impl (no CLOCK_MONOTONIC) */
-  uint64_t t = mach_absolute_time();
+  u64_t t = mach_absolute_time();
   mach_timebase_info_data_t timebase_info = {0, 0};
   mach_timebase_info(&timebase_info);
-  uint64_t nano = (t * timebase_info.numer) / (timebase_info.denom);
-  uint64_t sec = nano/1000000000L;
+  u64_t nano = (t * timebase_info.numer) / (timebase_info.denom);
+  u64_t sec = nano/1000000000L;
   nano -= sec * 1000000000L;
   ts->tv_sec = sec;
   ts->tv_nsec = nano;

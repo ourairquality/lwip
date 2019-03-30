@@ -71,8 +71,11 @@ const char *snmp_community_write = SNMP_COMMUNITY_WRITE;
 /** SNMP community string for sending traps */
 const char *snmp_community_trap = SNMP_COMMUNITY_TRAP;
 
-snmp_write_callback_fct snmp_write_callback     = NULL;
-void                   *snmp_write_callback_arg = NULL;
+snmp_write_callback_fct snmp_write_callback;
+void *snmp_write_callback_arg;
+
+snmp_inform_callback_fct snmp_inform_callback;
+void *snmp_inform_callback_arg;
 
 #if LWIP_SNMP_CONFIGURE_VERSIONS
 
@@ -154,9 +157,6 @@ snmp_v3_enable(u8_t enable)
 }
 
 #endif
-
-snmp_inform_callback_fct snmp_inform_callback     = NULL;
-void*                    snmp_inform_callback_arg = NULL;
 
 /**
  * @ingroup snmp_core
@@ -298,6 +298,16 @@ snmp_receive(void *handle, struct pbuf *p, const ip_addr_t *source_ip, u16_t por
 
   err = snmp_parse_inbound_frame(&request);
   if (err == ERR_OK) {
+    if (request.request_type == SNMP_ASN1_CONTEXT_PDU_GET_RESP) {
+      if (request.error_status == SNMP_ERR_NOERROR) {
+        /* If callback function has been defined call it. */
+        if (snmp_inform_callback != NULL) {
+          snmp_inform_callback(&request, snmp_inform_callback_arg);
+        }
+      }
+      /* stop further handling of GET RESP PDU, we are an agent */
+      return;
+    }
     err = snmp_prepare_outbound_frame(&request);
     if (err == ERR_OK) {
 
@@ -311,11 +321,6 @@ snmp_receive(void *handle, struct pbuf *p, const ip_addr_t *source_ip, u16_t por
           err = snmp_process_getbulk_request(&request);
         } else if (request.request_type == SNMP_ASN1_CONTEXT_PDU_SET_REQ) {
           err = snmp_process_set_request(&request);
-        } else if(request.request_type == SNMP_ASN1_CONTEXT_PDU_GET_RESP) {
-          /* If callback function has been defined call it. */
-          if (snmp_inform_callback != NULL) {
-            snmp_inform_callback(&request, snmp_inform_callback_arg);
-          }
         }
       }
 #if LWIP_SNMP_V3
@@ -379,7 +384,7 @@ snmp_receive(void *handle, struct pbuf *p, const ip_addr_t *source_ip, u16_t por
       }
 #endif
 
-      if ((err == ERR_OK) && (request.request_type != SNMP_ASN1_CONTEXT_PDU_GET_RESP)) {
+      if (err == ERR_OK) {
         err = snmp_complete_outbound_frame(&request);
 
         if (err == ERR_OK) {
@@ -834,7 +839,7 @@ snmp_parse_inbound_frame(struct snmp_request *request)
     /* @todo: Differentiate read/write access */
     strncpy((char *)request->community, snmp_community, SNMP_MAX_COMMUNITY_STR_LEN);
     request->community[SNMP_MAX_COMMUNITY_STR_LEN] = 0; /* ensure NULL termination (strncpy does NOT guarantee it!) */
-    request->community_strlen = (u16_t)strnlen((char *)request->community, SNMP_MAX_COMMUNITY_STR_LEN);
+    request->community_strlen = (u16_t)strlen((char *)request->community);
 
     /* RFC3414 globalData */
     IF_PARSE_EXEC(snmp_asn1_dec_tlv(&pbuf_stream, &tlv));

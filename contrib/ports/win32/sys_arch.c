@@ -79,7 +79,7 @@ static DWORD netconn_sem_tls_index;
 static HCRYPTPROV hcrypt;
 
 u32_t
-sys_win_rand(void)
+lwip_port_rand(void)
 {
   u32_t ret;
   if (CryptGenRandom(hcrypt, sizeof(ret), (BYTE*)&ret)) {
@@ -688,7 +688,7 @@ sys_arch_mbox_tryfetch(sys_mbox_t *q, void **msg)
       *msg  = NULL;
     }
 
-    return SYS_ARCH_TIMEOUT;
+    return SYS_MBOX_EMPTY;
   }
 }
 

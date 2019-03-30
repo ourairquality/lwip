@@ -1,6 +1,6 @@
 /**
  * @file
- * MDNS responder
+ * MDNS responder - domain related functionalities 
  */
 
  /*
@@ -36,58 +36,45 @@
  *
  */
 
-#ifndef LWIP_HDR_APPS_MDNS_OPTS_H
-#define LWIP_HDR_APPS_MDNS_OPTS_H
+#ifndef LWIP_HDR_APPS_MDNS_DOMAIN_H
+#define LWIP_HDR_APPS_MDNS_DOMAIN_H
 
-#include "lwip/opt.h"
+#include "lwip/apps/mdns_opts.h"
+#include "lwip/apps/mdns_priv.h"
 
-/**
- * @defgroup mdns_opts Options
- * @ingroup mdns
- * @{
- */
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-/**
- * LWIP_MDNS_RESPONDER==1: Turn on multicast DNS module. UDP must be available for MDNS
- * transport. IGMP is needed for IPv4 multicast.
- */
-#ifndef LWIP_MDNS_RESPONDER
-#define LWIP_MDNS_RESPONDER             0
+#if LWIP_MDNS_RESPONDER
+
+/* Domain methods - also visible for unit tests */
+
+err_t mdns_domain_add_label(struct mdns_domain *domain, const char *label, u8_t len);
+err_t mdns_domain_add_domain(struct mdns_domain *domain, struct mdns_domain *source);
+err_t mdns_domain_add_string(struct mdns_domain *domain, const char *source);
+u16_t mdns_readname(struct pbuf *p, u16_t offset, struct mdns_domain *domain);
+void mdns_domain_debug_print(struct mdns_domain *domain);
+int mdns_domain_eq(struct mdns_domain *a, struct mdns_domain *b);
+#if LWIP_IPV4
+err_t mdns_build_reverse_v4_domain(struct mdns_domain *domain, const ip4_addr_t *addr);
+#endif
+#if LWIP_IPV6
+err_t mdns_build_reverse_v6_domain(struct mdns_domain *domain, const ip6_addr_t *addr);
+#endif
+err_t mdns_build_host_domain(struct mdns_domain *domain, struct mdns_host *mdns);
+err_t mdns_build_dnssd_domain(struct mdns_domain *domain);
+err_t mdns_build_service_domain(struct mdns_domain *domain, struct mdns_service *service, int include_name);
+#if LWIP_MDNS_SEARCH
+err_t mdns_build_request_domain(struct mdns_domain *domain, struct mdns_request *request, int include_name);
+#endif
+u16_t mdns_compress_domain(struct pbuf *pbuf, u16_t *offset, struct mdns_domain *domain);
+err_t mdns_write_domain(struct mdns_outpacket *outpkt, struct mdns_domain *domain);
+
 #endif /* LWIP_MDNS_RESPONDER */
 
-/** The maximum number of services per netif */
-#ifndef MDNS_MAX_SERVICES
-#define MDNS_MAX_SERVICES               1
+#ifdef __cplusplus
+}
 #endif
 
-/** MDNS_RESP_USENETIF_EXTCALLBACK==1: register an ext_callback on the netif
- * to automatically restart probing/announcing on status or address change.
- */
-#ifndef MDNS_RESP_USENETIF_EXTCALLBACK
-#define MDNS_RESP_USENETIF_EXTCALLBACK  LWIP_NETIF_EXT_STATUS_CALLBACK
-#endif
-
-/**
- * LWIP_MDNS_SEARCH==1: Turn on search over multicast DNS module.
- */
-#ifndef LWIP_MDNS_SEARCH
-#define LWIP_MDNS_SEARCH                1
-#endif
-
-/** The maximum number of running requests */
-#ifndef MDNS_MAX_REQUESTS
-#define MDNS_MAX_REQUESTS               2
-#endif
-
-/**
- * MDNS_DEBUG: Enable debugging for multicast DNS.
- */
-#ifndef MDNS_DEBUG
-#define MDNS_DEBUG                       LWIP_DBG_OFF
-#endif
-
-/**
- * @}
- */
-
-#endif /* LWIP_HDR_APPS_MDNS_OPTS_H */
+#endif /* LWIP_HDR_APPS_MDNS_DOMAIN_H */
