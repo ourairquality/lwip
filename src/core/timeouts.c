@@ -260,7 +260,7 @@ void sys_timeouts_init(void)
   for (i = (LWIP_TCP ? 1 : 0); i < LWIP_ARRAYSIZE(lwip_cyclic_timers); i++) {
     /* we have to cast via size_t to get rid of const warning
       (this is OK as cyclic_timer() casts back to const* */
-    struct lwip_cyclic_timer *cyclic = LWIP_CONST_CAST(void *, &lwip_cyclic_timers[i]);
+    struct lwip_cyclic_timer *cyclic = LWIP_CONST_CAST(struct lwip_cyclic_timer *, &lwip_cyclic_timers[i]);
 #if LWIP_DEBUG_TIMERNAMES
     sys_timeout_abs(now + lwip_cyclic_timers[i].interval_ms, lwip_cyclic_timer, cyclic, cyclic->handler_name);
 #else /* LWIP_DEBUG_TIMERNAMES */
