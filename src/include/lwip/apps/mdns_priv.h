@@ -75,9 +75,9 @@ extern "C" {
 /** Description of a search request */
 struct mdns_request {
   /** Name of service, like 'myweb' */
-  char name[MDNS_LABEL_MAXLEN + 1];
+  char *name;
   /** Type of service, like '_http' or '_services._dns-sd' */
-  struct mdns_domain service;
+  struct mdns_domain *service;
   /** Callback function called for each response */
   search_result_fn_t result_fn;
   void *arg;
@@ -93,11 +93,11 @@ struct mdns_request {
 /** Description of a service */
 struct mdns_service {
   /** TXT record to answer with */
-  struct mdns_domain txtdata;
+  struct mdns_domain *txtdata;
   /** Name of service, like 'myweb' */
-  char name[MDNS_LABEL_MAXLEN + 1];
+  char *name;
   /** Type of service, like '_http' */
-  char service[MDNS_LABEL_MAXLEN + 1];
+  char *service;
   /** Callback function and userdata
    * to update txtdata buffer */
   service_get_txt_fn_t txt_fn;
@@ -200,7 +200,7 @@ typedef enum {
 /** Description of a host/netif */
 struct mdns_host {
   /** Hostname */
-  char name[MDNS_LABEL_MAXLEN + 1];
+  char *name;
   /** Pointer to services */
   struct mdns_service *services[MDNS_MAX_SERVICES];
   /** Number of probes/announces sent for the current name */

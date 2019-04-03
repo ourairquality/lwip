@@ -64,10 +64,12 @@ struct mdns_service;
 
 /* Domain structs */
 struct mdns_domain {
-  /* Encoded domain name */
-  u8_t name[MDNS_DOMAIN_MAXLEN];
+  /* Storage length. */
+  u16_t storage_length;
   /* Total length of domain name, including zero */
   u16_t length;
+  /* Encoded domain name [MDNS_DOMAIN_MAXLEN] */
+  u8_t *name;
   /* Set if compression of this domain is not allowed */
   u8_t skip_compression;
 };
@@ -75,7 +77,7 @@ struct mdns_domain {
 /** Domain, type and class.
  *  Shared between questions and answers */
 struct mdns_rr_info {
-  struct mdns_domain domain;
+  struct mdns_domain *domain;
   u16_t type;
   u16_t klass;
 };

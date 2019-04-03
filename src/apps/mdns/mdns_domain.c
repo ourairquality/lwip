@@ -75,20 +75,76 @@ static u16_t mdns_readname_loop(struct pbuf *p, u16_t offset,
                                 struct mdns_domain *domain, unsigned depth);
 static err_t mdns_add_dotlocal(struct mdns_domain *domain);
 
+struct mdns_domain *
+mdns_domain_alloc(void)
+{
+  return (struct mdns_domain *)mem_calloc(1, sizeof(struct mdns_domain));
+}
+
+void
+mdns_domain_free(struct mdns_domain *domain)
+{
+  u8_t *name = domain->name;
+  if (name) {
+    domain->name = NULL;
+    mem_free(name);
+  }
+  mem_free(domain);
+}
+
+err_t
+mdns_domain_ensure_name(struct mdns_domain *domain, u16_t length)
+{
+  LWIP_ASSERT("mdns_domain_ensure_name: length overflow", length <= MDNS_DOMAIN_MAXLEN);
+  if (!domain->name) {
+    domain->name = (u8_t *)mem_malloc(length);
+    if (!domain->name) {
+      return ERR_MEM;
+    }
+    domain->storage_length = length;
+  } else if (length > domain->storage_length) {
+    u8_t *new_name = (u8_t *)mem_malloc(length);
+    if (!new_name) {
+      return ERR_MEM;
+    }
+    memcpy(new_name, domain->name, domain->storage_length);
+    mem_free(domain->name);
+    domain->name = new_name;
+    domain->storage_length = length;
+  }
+  return ERR_OK;
+}
 
 static err_t
 mdns_domain_add_label_base(struct mdns_domain *domain, u8_t len)
 {
+  u16_t required;
   if (len > MDNS_LABEL_MAXLEN) {
     return ERR_VAL;
   }
-  if (len > 0 && (1 + len + domain->length >= MDNS_DOMAIN_MAXLEN)) {
-    return ERR_VAL;
+  required = domain->length + 1 + len;
+  if (len > 0) {
+    err_t err;
+    if (required >= MDNS_DOMAIN_MAXLEN) {
+      return ERR_VAL;
+    }
+    /* Allocate space for the expected zero marker. */
+    err = mdns_domain_ensure_name(domain, required + 1);
+    if (err != ERR_OK) {
+      return err;
+    }
+  } else {
+    /* Zero len. Allow only zero marker on last byte */
+    err_t err;
+    if (required > MDNS_DOMAIN_MAXLEN) {
+      return ERR_VAL;
+    }
+    err = mdns_domain_ensure_name(domain, required);
+    if (err != ERR_OK) {
+      return err;
+    }
   }
-  /* Allow only zero marker on last byte */
-  if (len == 0 && (1 + domain->length > MDNS_DOMAIN_MAXLEN)) {
-    return ERR_VAL;
-  }
+
   domain->name[domain->length] = len;
   domain->length++;
   return ERR_OK;
@@ -145,19 +201,35 @@ mdns_domain_add_label_pbuf(struct mdns_domain *domain, const struct pbuf *p, u16
 err_t
 mdns_domain_add_domain(struct mdns_domain *domain, struct mdns_domain *source)
 {
-  u16_t len = source->length;
-  if (len > 0 && (1 + len + domain->length >= MDNS_DOMAIN_MAXLEN)) {
-    return ERR_VAL;
-  }
-  /* Allow only zero marker on last byte */
-  if (len == 0 && (1 + domain->length > MDNS_DOMAIN_MAXLEN)) {
-    return ERR_VAL;
-  }
-  if (len) {
+  u16_t len;
+  u16_t required;
+
+  len = source->length;
+  required = domain->length + len + 1;
+
+  if (len > 0) {
+    err_t err;
+    if (required >= MDNS_DOMAIN_MAXLEN) {
+      return ERR_VAL;
+    }
+    /* Allocate space for the expected zero marker. */
+    err = mdns_domain_ensure_name(domain, required + 1);
+    if (err != ERR_OK) {
+      return err;
+    }
     /* Copy partial domain */
     MEMCPY(&domain->name[domain->length], source->name, len);
     domain->length += len;
   } else {
+    err_t err;
+    /* Zero len. Allow only zero marker on last byte */
+    if (required > MDNS_DOMAIN_MAXLEN) {
+      return ERR_VAL;
+    }
+    err = mdns_domain_ensure_name(domain, required);
+    if (err != ERR_OK) {
+      return err;
+    }
     /* Add zero marker */
     domain->name[domain->length] = 0;
     domain->length++;
@@ -174,11 +246,30 @@ mdns_domain_add_domain(struct mdns_domain *domain, struct mdns_domain *source)
 err_t
 mdns_domain_add_string(struct mdns_domain *domain, const char *source)
 {
-  u8_t *len = &domain->name[domain->length];
-  u8_t *end = &domain->name[MDNS_DOMAIN_MAXLEN];
-  u8_t *start = len + 1;
+  u16_t source_len;
+  u16_t required;
+  err_t err;
+  u8_t *len;
+  u8_t *start;
+
+  source_len = (u16_t)strnlen(source, MDNS_DOMAIN_MAXLEN);
+  if (source_len >= MDNS_DOMAIN_MAXLEN) {
+    return ERR_VAL;
+  }
+  required = domain->length + 1 + source_len;
+  if (required >= MDNS_DOMAIN_MAXLEN) {
+    return ERR_VAL;
+  }
+  /* Allocate space for the expected zero marker. */
+  err = mdns_domain_ensure_name(domain, required + 1);
+  if (err != ERR_OK) {
+    return err;
+  }
+
+  len = &domain->name[domain->length];
   *len = 0;
-  while (*source && start < end) {
+  start = len + 1;
+  while (*source) {
       if (*source == '.') {
         len = start++;
         *len = 0;
@@ -188,10 +279,8 @@ mdns_domain_add_string(struct mdns_domain *domain, const char *source)
         *len = *len + 1;
       }
   }
-  if (start == end) {
-      return ERR_VAL;
-  }
-  domain->length = (u16_t)(start - &domain->name[0]);
+  LWIP_ASSERT("mdns_domain_add_string", required == (u16_t)(start - &domain->name[0]));
+  domain->length = required;
   return ERR_OK;
 }
 
@@ -267,10 +356,13 @@ mdns_readname_loop(struct pbuf *p, u16_t offset, struct mdns_domain *domain, uns
  *         if reading failed
  */
 u16_t
-mdns_readname(struct pbuf *p, u16_t offset, struct mdns_domain *domain)
+mdns_readname(struct pbuf *p, u16_t offset, struct mdns_domain **domain)
 {
-  memset(domain, 0, sizeof(struct mdns_domain));
-  return mdns_readname_loop(p, offset, domain, 0);
+  *domain = mdns_domain_alloc();
+  if (*domain == NULL) {
+    return MDNS_READNAME_ERROR;
+  }
+  return mdns_readname_loop(p, offset, *domain, 0);
 }
 
 /**
@@ -313,6 +405,12 @@ mdns_domain_eq(struct mdns_domain *a, struct mdns_domain *b)
 
   ptra = a->name;
   ptrb = b->name;
+
+  if (!ptra || !ptrb) {
+    /* Consider them undefined */
+    return 0;
+  }
+
   while (*ptra && *ptrb && ptra < &a->name[a->length]) {
     if (*ptra != *ptrb) {
       return 0;
@@ -337,22 +435,26 @@ mdns_domain_eq(struct mdns_domain *a, struct mdns_domain *b)
 /**
  * Build domain for reverse lookup of IPv4 address
  * like 12.0.168.192.in-addr.arpa. for 192.168.0.12
- * @param domain Where to write the domain name
  * @param addr Pointer to an IPv4 address to encode
- * @return ERR_OK if domain was written, an err_t otherwise
+ * @return a struct pointer on success, otherwise NULL.
  */
-err_t
-mdns_build_reverse_v4_domain(struct mdns_domain *domain, const ip4_addr_t *addr)
+struct mdns_domain *
+mdns_build_reverse_v4_domain(const ip4_addr_t *addr)
 {
   int i;
   err_t res;
   const u8_t *ptr;
+  struct mdns_domain *domain;
 
   LWIP_UNUSED_ARG(res);
-  if (!domain || !addr) {
-    return ERR_ARG;
+  if (!addr) {
+    return NULL;
   }
-  memset(domain, 0, sizeof(struct mdns_domain));
+  domain = mdns_domain_alloc();
+  if (domain == NULL) {
+    return NULL;
+  }
+
   ptr = (const u8_t *) addr;
   for (i = sizeof(ip4_addr_t) - 1; i >= 0; i--) {
     char buf[4];
@@ -360,16 +462,19 @@ mdns_build_reverse_v4_domain(struct mdns_domain *domain, const ip4_addr_t *addr)
 
     lwip_itoa(buf, sizeof(buf), val);
     res = mdns_domain_add_label(domain, buf, (u8_t)strlen(buf));
-    LWIP_ERROR("mdns_build_reverse_v4_domain: Failed to add label", (res == ERR_OK), return res);
+    LWIP_ERROR("mdns_build_reverse_v4_domain: Failed to add label", (res == ERR_OK), goto err);
   }
   res = mdns_domain_add_label(domain, REVERSE_PTR_V4_DOMAIN, (u8_t)(sizeof(REVERSE_PTR_V4_DOMAIN) - 1));
-  LWIP_ERROR("mdns_build_reverse_v4_domain: Failed to add label", (res == ERR_OK), return res);
+  LWIP_ERROR("mdns_build_reverse_v4_domain: Failed to add label", (res == ERR_OK), goto err);
   res = mdns_domain_add_label(domain, REVERSE_PTR_TOPDOMAIN, (u8_t)(sizeof(REVERSE_PTR_TOPDOMAIN) - 1));
-  LWIP_ERROR("mdns_build_reverse_v4_domain: Failed to add label", (res == ERR_OK), return res);
+  LWIP_ERROR("mdns_build_reverse_v4_domain: Failed to add label", (res == ERR_OK), goto err);
   res = mdns_domain_add_label(domain, NULL, 0);
-  LWIP_ERROR("mdns_build_reverse_v4_domain: Failed to add label", (res == ERR_OK), return res);
+  LWIP_ERROR("mdns_build_reverse_v4_domain: Failed to add label", (res == ERR_OK), goto err);
+  return domain;
 
-  return ERR_OK;
+ err:
+  mdns_domain_free(domain);
+  return NULL;
 }
 #endif
 
@@ -377,21 +482,25 @@ mdns_build_reverse_v4_domain(struct mdns_domain *domain, const ip4_addr_t *addr)
 /**
  * Build domain for reverse lookup of IP address
  * like b.a.9.8.7.6.5.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa. for 2001:db8::567:89ab
- * @param domain Where to write the domain name
  * @param addr Pointer to an IPv6 address to encode
- * @return ERR_OK if domain was written, an err_t otherwise
+ * @return a struct pointer on success, otherwise NULL.
  */
-err_t
-mdns_build_reverse_v6_domain(struct mdns_domain *domain, const ip6_addr_t *addr)
+struct mdns_domain *
+mdns_build_reverse_v6_domain(const ip6_addr_t *addr)
 {
   int i;
   err_t res;
   const u8_t *ptr;
+  struct mdns_domain *domain;
   LWIP_UNUSED_ARG(res);
-  if (!domain || !addr) {
-    return ERR_ARG;
+
+  if (!addr) {
+    return NULL;
   }
-  memset(domain, 0, sizeof(struct mdns_domain));
+  domain = mdns_domain_alloc();
+  if (domain == NULL) {
+    return NULL;
+  }
   ptr = (const u8_t *) addr;
   for (i = sizeof(ip6_addr_p_t) - 1; i >= 0; i--) {
     char buf;
@@ -404,18 +513,22 @@ mdns_build_reverse_v6_domain(struct mdns_domain *domain, const ip6_addr_t *addr)
         buf = 'a' + (byte & 0x0F) - 0xA;
       }
       res = mdns_domain_add_label(domain, &buf, sizeof(buf));
-      LWIP_ERROR("mdns_build_reverse_v6_domain: Failed to add label", (res == ERR_OK), return res);
+      LWIP_ERROR("mdns_build_reverse_v6_domain: Failed to add label", (res == ERR_OK), goto err);
       byte >>= 4;
     }
   }
   res = mdns_domain_add_label(domain, REVERSE_PTR_V6_DOMAIN, (u8_t)(sizeof(REVERSE_PTR_V6_DOMAIN) - 1));
-  LWIP_ERROR("mdns_build_reverse_v6_domain: Failed to add label", (res == ERR_OK), return res);
+  LWIP_ERROR("mdns_build_reverse_v6_domain: Failed to add label", (res == ERR_OK), goto err);
   res = mdns_domain_add_label(domain, REVERSE_PTR_TOPDOMAIN, (u8_t)(sizeof(REVERSE_PTR_TOPDOMAIN) - 1));
-  LWIP_ERROR("mdns_build_reverse_v6_domain: Failed to add label", (res == ERR_OK), return res);
+  LWIP_ERROR("mdns_build_reverse_v6_domain: Failed to add label", (res == ERR_OK), goto err);
   res = mdns_domain_add_label(domain, NULL, 0);
-  LWIP_ERROR("mdns_build_reverse_v6_domain: Failed to add label", (res == ERR_OK), return res);
+  LWIP_ERROR("mdns_build_reverse_v6_domain: Failed to add label", (res == ERR_OK), goto err);
 
-  return ERR_OK;
+  return domain;
+
+ err:
+  mdns_domain_free(domain);
+  return NULL;
 }
 #endif
 
@@ -431,92 +544,128 @@ mdns_add_dotlocal(struct mdns_domain *domain)
 
 /**
  * Build the \<hostname\>.local. domain name
- * @param domain Where to write the domain name
  * @param mdns TMDNS netif descriptor.
- * @return ERR_OK if domain \<hostname\>.local. was written, an err_t otherwise
+ * @return a struct pointer if domain \<hostname\>.local. was written, otherwise NULL.
  */
-err_t
-mdns_build_host_domain(struct mdns_domain *domain, struct mdns_host *mdns)
+struct mdns_domain *
+mdns_build_host_domain(struct mdns_host *mdns)
 {
   err_t res;
+  struct mdns_domain *domain;
   LWIP_UNUSED_ARG(res);
-  memset(domain, 0, sizeof(struct mdns_domain));
-  LWIP_ERROR("mdns_build_host_domain: mdns != NULL", (mdns != NULL), return ERR_VAL);
+  domain = mdns_domain_alloc();
+  if (domain == NULL) {
+    return NULL;
+  }
+  LWIP_ERROR("mdns_build_host_domain: mdns != NULL", (mdns != NULL), goto err);
   res = mdns_domain_add_label(domain, mdns->name, (u8_t)strlen(mdns->name));
-  LWIP_ERROR("mdns_build_host_domain: Failed to add label", (res == ERR_OK), return res);
-  return mdns_add_dotlocal(domain);
+  LWIP_ERROR("mdns_build_host_domain: Failed to add label", (res == ERR_OK), goto err);
+  res = mdns_add_dotlocal(domain);
+  LWIP_ERROR("mdns_build_host_domain: Failed to add dot", (res == ERR_OK), goto err);
+  return domain;
+
+ err:
+  mdns_domain_free(domain);
+  return NULL;
 }
 
 /**
  * Build the lookup-all-services special DNS-SD domain name
- * @param domain Where to write the domain name
- * @return ERR_OK if domain _services._dns-sd._udp.local. was written, an err_t otherwise
+ * @return a struct pointer if domain _services._dns-sd._udp.local. was written, otherwise NULL.
  */
-err_t
-mdns_build_dnssd_domain(struct mdns_domain *domain)
+struct mdns_domain *
+mdns_build_dnssd_domain(void)
 {
   err_t res;
+  struct mdns_domain *domain;
   LWIP_UNUSED_ARG(res);
-  memset(domain, 0, sizeof(struct mdns_domain));
+  domain = mdns_domain_alloc();
+  if (domain == NULL) {
+    return NULL;
+  }
   res = mdns_domain_add_label(domain, "_services", (u8_t)(sizeof("_services") - 1));
-  LWIP_ERROR("mdns_build_dnssd_domain: Failed to add label", (res == ERR_OK), return res);
+  LWIP_ERROR("mdns_build_dnssd_domain: Failed to add label", (res == ERR_OK), goto err);
   res = mdns_domain_add_label(domain, "_dns-sd", (u8_t)(sizeof("_dns-sd") - 1));
-  LWIP_ERROR("mdns_build_dnssd_domain: Failed to add label", (res == ERR_OK), return res);
+  LWIP_ERROR("mdns_build_dnssd_domain: Failed to add label", (res == ERR_OK), goto err);
   res = mdns_domain_add_label(domain, dnssd_protos[DNSSD_PROTO_UDP], (u8_t)strlen(dnssd_protos[DNSSD_PROTO_UDP]));
-  LWIP_ERROR("mdns_build_dnssd_domain: Failed to add label", (res == ERR_OK), return res);
-  return mdns_add_dotlocal(domain);
+  LWIP_ERROR("mdns_build_dnssd_domain: Failed to add label", (res == ERR_OK), goto err);
+  res = mdns_add_dotlocal(domain);
+  LWIP_ERROR("mdns_build_dnssd_domain: Failed to add dot", (res == ERR_OK), goto err);
+  return domain;
+
+ err:
+  mdns_domain_free(domain);
+  return NULL;
 }
 
 /**
  * Build domain name for a service
- * @param domain Where to write the domain name
  * @param service The service struct, containing service name, type and protocol
  * @param include_name Whether to include the service name in the domain
- * @return ERR_OK if domain was written. If service name is included,
+ * @return a struct pointer if domain was written. If service name is included,
  *         \<name\>.\<type\>.\<proto\>.local. will be written, otherwise \<type\>.\<proto\>.local.
- *         An err_t is returned on error.
+ *         NULL is returned on error.
  */
-err_t
-mdns_build_service_domain(struct mdns_domain *domain, struct mdns_service *service, int include_name)
+struct mdns_domain *
+mdns_build_service_domain(struct mdns_service *service, int include_name)
 {
   err_t res;
+  struct mdns_domain *domain;
   LWIP_UNUSED_ARG(res);
-  memset(domain, 0, sizeof(struct mdns_domain));
+  domain = mdns_domain_alloc();
+  if (domain == NULL) {
+    return NULL;
+  }
   if (include_name) {
     res = mdns_domain_add_label(domain, service->name, (u8_t)strlen(service->name));
-    LWIP_ERROR("mdns_build_service_domain: Failed to add label", (res == ERR_OK), return res);
+    LWIP_ERROR("mdns_build_service_domain: Failed to add label", (res == ERR_OK), goto err);
   }
   res = mdns_domain_add_label(domain, service->service, (u8_t)strlen(service->service));
-  LWIP_ERROR("mdns_build_service_domain: Failed to add label", (res == ERR_OK), return res);
+  LWIP_ERROR("mdns_build_service_domain: Failed to add label", (res == ERR_OK), goto err);
   res = mdns_domain_add_label(domain, dnssd_protos[service->proto], (u8_t)strlen(dnssd_protos[service->proto]));
-  LWIP_ERROR("mdns_build_service_domain: Failed to add label", (res == ERR_OK), return res);
-  return mdns_add_dotlocal(domain);
+  LWIP_ERROR("mdns_build_service_domain: Failed to add label", (res == ERR_OK), goto err);
+  res = mdns_add_dotlocal(domain);
+  LWIP_ERROR("mdns_build_service_domain: Failed to add dot", (res == ERR_OK), goto err);
+  return domain;
+
+ err:
+  mdns_domain_free(domain);
+  return NULL;
 }
 
 #if LWIP_MDNS_SEARCH
 /**
  * Build domain name for a request
- * @param domain Where to write the domain name
  * @param request The request struct, containing service name, type and protocol
  * @param include_name Whether to include the service name in the domain
- * @return ERR_OK if domain was written. If service name is included,
+ * @return a struct pointer if domain was written. If service name is included,
  *         \<name\>.\<type\>.\<proto\>.local. will be written, otherwise \<type\>.\<proto\>.local.
- *         An err_t is returned on error.
  */
-err_t
-mdns_build_request_domain(struct mdns_domain *domain, struct mdns_request *request, int include_name)
+struct mdns_domain *
+mdns_build_request_domain(struct mdns_request *request, int include_name)
 {
   err_t res;
-  memset(domain, 0, sizeof(struct mdns_domain));
+  struct mdns_domain *domain;
+  LWIP_UNUSED_ARG(res);
+  domain = mdns_domain_alloc();
+  if (domain == NULL) {
+    return NULL;
+  }
   if (include_name) {
     res = mdns_domain_add_label(domain, request->name, (u8_t)strlen(request->name));
-    LWIP_ERROR("mdns_build_request_domain: Failed to add label", (res == ERR_OK), return res);
+    LWIP_ERROR("mdns_build_request_domain: Failed to add label", (res == ERR_OK), goto err);
   }
-  res = mdns_domain_add_domain(domain, &request->service);
-  LWIP_ERROR("mdns_build_request_domain: Failed to add domain", (res == ERR_OK), return res);
+  res = mdns_domain_add_domain(domain, request->service);
+  LWIP_ERROR("mdns_build_request_domain: Failed to add domain", (res == ERR_OK), goto err);
   res = mdns_domain_add_label(domain, dnssd_protos[request->proto], (u8_t)strlen(dnssd_protos[request->proto]));
-  LWIP_ERROR("mdns_build_request_domain: Failed to add label", (res == ERR_OK), return res);
-  return mdns_add_dotlocal(domain);
+  LWIP_ERROR("mdns_build_request_domain: Failed to add label", (res == ERR_OK), goto err);
+  res = mdns_add_dotlocal(domain);
+  LWIP_ERROR("mdns_build_service_domain: Failed to add dot", (res == ERR_OK), goto err);
+  return domain;
+
+ err:
+  mdns_domain_free(domain);
+  return NULL;
 }
 #endif
 
@@ -535,7 +684,7 @@ mdns_build_request_domain(struct mdns_domain *domain, struct mdns_request *reque
 u16_t
 mdns_compress_domain(struct pbuf *pbuf, u16_t *offset, struct mdns_domain *domain)
 {
-  struct mdns_domain target;
+  struct mdns_domain *target;
   u16_t target_end;
   u8_t target_len;
   u8_t writelen = 0;
@@ -545,23 +694,28 @@ mdns_compress_domain(struct pbuf *pbuf, u16_t *offset, struct mdns_domain *domai
   }
   target_end = mdns_readname(pbuf, *offset, &target);
   if (target_end == MDNS_READNAME_ERROR) {
+    mdns_domain_free(target);
     return domain->length;
   }
   target_len = (u8_t)(target_end - *offset);
   ptr = domain->name;
+  if (!ptr) {
+    return domain->length;
+  }
   while (writelen < domain->length) {
     u8_t domainlen = (u8_t)(domain->length - writelen);
     u8_t labellen;
-    if (domainlen <= target.length && domainlen > DOMAIN_JUMP_SIZE) {
+    if (domainlen <= target->length && domainlen > DOMAIN_JUMP_SIZE) {
       /* Compare domains if target is long enough, and we have enough left of the domain */
-      u8_t targetpos = (u8_t)(target.length - domainlen);
+      u8_t targetpos = (u8_t)(target->length - domainlen);
       if ((targetpos + DOMAIN_JUMP_SIZE) >= target_len) {
         /* We are checking at or beyond a jump in the original, stop looking */
         break;
       }
-      if (target.length >= domainlen &&
-          memcmp(&domain->name[writelen], &target.name[targetpos], domainlen) == 0) {
+      if (target->length >= domainlen &&
+          memcmp(&domain->name[writelen], &target->name[targetpos], domainlen) == 0) {
         *offset += targetpos;
+        mdns_domain_free(target);
         return writelen;
       }
     }
@@ -571,6 +725,7 @@ mdns_compress_domain(struct pbuf *pbuf, u16_t *offset, struct mdns_domain *domai
     ptr += 1 + labellen;
   }
   /* Nothing found */
+  mdns_domain_free(target);
   return domain->length;
 }
 

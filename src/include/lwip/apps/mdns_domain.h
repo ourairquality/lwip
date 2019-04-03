@@ -50,23 +50,27 @@ extern "C" {
 
 /* Domain methods - also visible for unit tests */
 
+struct mdns_domain *mdns_domain_alloc(void);
+void mdns_domain_free(struct mdns_domain *domain);
+err_t mdns_domain_ensure_name(struct mdns_domain *domain, u16_t length);
+
 err_t mdns_domain_add_label(struct mdns_domain *domain, const char *label, u8_t len);
 err_t mdns_domain_add_domain(struct mdns_domain *domain, struct mdns_domain *source);
 err_t mdns_domain_add_string(struct mdns_domain *domain, const char *source);
-u16_t mdns_readname(struct pbuf *p, u16_t offset, struct mdns_domain *domain);
+u16_t mdns_readname(struct pbuf *p, u16_t offset, struct mdns_domain **domain);
 void mdns_domain_debug_print(struct mdns_domain *domain);
 int mdns_domain_eq(struct mdns_domain *a, struct mdns_domain *b);
 #if LWIP_IPV4
-err_t mdns_build_reverse_v4_domain(struct mdns_domain *domain, const ip4_addr_t *addr);
+struct mdns_domain *mdns_build_reverse_v4_domain(const ip4_addr_t *addr);
 #endif
 #if LWIP_IPV6
-err_t mdns_build_reverse_v6_domain(struct mdns_domain *domain, const ip6_addr_t *addr);
+struct mdns_domain *mdns_build_reverse_v6_domain(const ip6_addr_t *addr);
 #endif
-err_t mdns_build_host_domain(struct mdns_domain *domain, struct mdns_host *mdns);
-err_t mdns_build_dnssd_domain(struct mdns_domain *domain);
-err_t mdns_build_service_domain(struct mdns_domain *domain, struct mdns_service *service, int include_name);
+struct mdns_domain *mdns_build_host_domain(struct mdns_host *mdns);
+struct mdns_domain *mdns_build_dnssd_domain(void);
+struct mdns_domain *mdns_build_service_domain(struct mdns_service *service, int include_name);
 #if LWIP_MDNS_SEARCH
-err_t mdns_build_request_domain(struct mdns_domain *domain, struct mdns_request *request, int include_name);
+struct mdns_domain *mdns_build_request_domain(struct mdns_request *request, int include_name);
 #endif
 u16_t mdns_compress_domain(struct pbuf *pbuf, u16_t *offset, struct mdns_domain *domain);
 err_t mdns_write_domain(struct mdns_outpacket *outpkt, struct mdns_domain *domain);

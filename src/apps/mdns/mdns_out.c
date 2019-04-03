@@ -65,7 +65,7 @@ static void mdns_clear_outmsg(struct mdns_outmsg *outmsg);
 void
 mdns_prepare_txtdata(struct mdns_service *service)
 {
-  memset(&service->txtdata, 0, sizeof(struct mdns_domain));
+  LWIP_ASSERT("mdns_prepare_txtdata: !txtdata", !service->txtdata);
   if (service->txt_fn) {
     service->txt_fn(service, service->txt_userdata);
   }
@@ -232,11 +232,17 @@ mdns_add_any_host_question(struct mdns_outpacket *outpkt,
                            struct mdns_host *mdns,
                            u16_t request_unicast_reply)
 {
-  struct mdns_domain host;
-  mdns_build_host_domain(&host, mdns);
+  struct mdns_domain *host;
+  err_t res;
+  host = mdns_build_host_domain(mdns);
+  if (host == NULL) {
+    return ERR_MEM;
+  }
   LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Adding host question for ANY type\n"));
-  return mdns_add_question(outpkt, &host, DNS_RRTYPE_ANY, DNS_RRCLASS_IN,
-                           request_unicast_reply);
+  res = mdns_add_question(outpkt, host, DNS_RRTYPE_ANY, DNS_RRCLASS_IN,
+                          request_unicast_reply);
+  mdns_domain_free(host);
+  return res;
 }
 
 /** Write an ANY service instance question to outpacket */
@@ -245,11 +251,17 @@ mdns_add_any_service_question(struct mdns_outpacket *outpkt,
                               struct mdns_service *service,
                               u16_t request_unicast_reply)
 {
-  struct mdns_domain domain;
-  mdns_build_service_domain(&domain, service, 1);
+  struct mdns_domain *domain;
+  err_t res;
+  domain = mdns_build_service_domain(service, 1);
+  if (domain == NULL) {
+    return ERR_MEM;
+  }
   LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Adding service instance question for ANY type\n"));
-  return mdns_add_question(outpkt, &domain, DNS_RRTYPE_ANY, DNS_RRCLASS_IN,
-                           request_unicast_reply);
+  res = mdns_add_question(outpkt, domain, DNS_RRTYPE_ANY, DNS_RRCLASS_IN,
+                          request_unicast_reply);
+  mdns_domain_free(domain);
+  return res;
 }
 
 #if LWIP_IPV4
@@ -260,8 +272,11 @@ mdns_add_a_answer(struct mdns_outpacket *reply, struct mdns_outmsg *msg,
 {
   err_t res;
   u32_t ttl = MDNS_TTL_120;
-  struct mdns_domain host;
-  mdns_build_host_domain(&host, netif_mdns_data(netif));
+  struct mdns_domain *host;
+  host = mdns_build_host_domain(netif_mdns_data(netif));
+  if (host == NULL) {
+    return ERR_MEM;
+  }
   /* When answering to a legacy querier, we need to repeat the question and
    * limit the ttl to the short legacy ttl */
   if(msg->legacy_query) {
@@ -269,9 +284,9 @@ mdns_add_a_answer(struct mdns_outpacket *reply, struct mdns_outmsg *msg,
      * (max one question), not for the additional records. */
     if(reply->questions < 1) {
       LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Add question for legacy query\n"));
-      res = mdns_add_question(reply, &host, DNS_RRTYPE_A, DNS_RRCLASS_IN, 0);
+      res = mdns_add_question(reply, host, DNS_RRTYPE_A, DNS_RRCLASS_IN, 0);
       if (res != ERR_OK) {
-        return res;
+        goto cleanup;
       }
       reply->questions = 1;
     }
@@ -279,9 +294,12 @@ mdns_add_a_answer(struct mdns_outpacket *reply, struct mdns_outmsg *msg,
     ttl = MDNS_TTL_10;
   }
   LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Responding with A record\n"));
-  return mdns_add_answer(reply, &host, DNS_RRTYPE_A, DNS_RRCLASS_IN, msg->cache_flush,
-                         ttl, (const u8_t *) netif_ip4_addr(netif),
-                         sizeof(ip4_addr_t), NULL);
+  res = mdns_add_answer(reply, host, DNS_RRTYPE_A, DNS_RRCLASS_IN, msg->cache_flush,
+                        ttl, (const u8_t *) netif_ip4_addr(netif),
+                        sizeof(ip4_addr_t), NULL);
+ cleanup:
+  mdns_domain_free(host);
+  return res;
 }
 
 /** Write a 4.3.2.1.in-addr.arpa -> hostname.local PTR RR to outpacket */
@@ -291,9 +309,16 @@ mdns_add_hostv4_ptr_answer(struct mdns_outpacket *reply, struct mdns_outmsg *msg
 {
   err_t res;
   u32_t ttl = MDNS_TTL_120;
-  struct mdns_domain host, revhost;
-  mdns_build_host_domain(&host, netif_mdns_data(netif));
-  mdns_build_reverse_v4_domain(&revhost, netif_ip4_addr(netif));
+  struct mdns_domain *host, *revhost;
+  host = mdns_build_host_domain(netif_mdns_data(netif));
+  if (host == NULL) {
+    return ERR_MEM;
+  }
+  revhost = mdns_build_reverse_v4_domain(netif_ip4_addr(netif));
+  if (revhost == NULL) {
+    res = ERR_MEM;
+    goto cleanup_host;
+  }
   /* When answering to a legacy querier, we need to repeat the question and
    * limit the ttl to the short legacy ttl */
   if(msg->legacy_query) {
@@ -301,9 +326,9 @@ mdns_add_hostv4_ptr_answer(struct mdns_outpacket *reply, struct mdns_outmsg *msg
      * (max one question), not for the additional records. */
     if(reply->questions < 1) {
       LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Add question for legacy query\n"));
-      res = mdns_add_question(reply, &revhost, DNS_RRTYPE_PTR, DNS_RRCLASS_IN, 0);
+      res = mdns_add_question(reply, revhost, DNS_RRTYPE_PTR, DNS_RRCLASS_IN, 0);
       if (res != ERR_OK) {
-        return res;
+        goto cleanup;
       }
       reply->questions = 1;
     }
@@ -311,8 +336,13 @@ mdns_add_hostv4_ptr_answer(struct mdns_outpacket *reply, struct mdns_outmsg *msg
     ttl = MDNS_TTL_10;
   }
   LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Responding with v4 PTR record\n"));
-  return mdns_add_answer(reply, &revhost, DNS_RRTYPE_PTR, DNS_RRCLASS_IN,
-                         msg->cache_flush, ttl, NULL, 0, &host);
+  res = mdns_add_answer(reply, revhost, DNS_RRTYPE_PTR, DNS_RRCLASS_IN,
+                        msg->cache_flush, ttl, NULL, 0, host);
+ cleanup:
+  mdns_domain_free(revhost);
+ cleanup_host:
+  mdns_domain_free(host);
+  return res;
 }
 #endif
 
@@ -324,8 +354,11 @@ mdns_add_aaaa_answer(struct mdns_outpacket *reply, struct mdns_outmsg *msg,
 {
   err_t res;
   u32_t ttl = MDNS_TTL_120;
-  struct mdns_domain host;
-  mdns_build_host_domain(&host, netif_mdns_data(netif));
+  struct mdns_domain *host;
+  host = mdns_build_host_domain(netif_mdns_data(netif));
+  if (host == NULL) {
+    return ERR_MEM;
+  }
   /* When answering to a legacy querier, we need to repeat the question and
    * limit the ttl to the short legacy ttl */
   if(msg->legacy_query) {
@@ -333,9 +366,9 @@ mdns_add_aaaa_answer(struct mdns_outpacket *reply, struct mdns_outmsg *msg,
      * (max one question), not for the additional records. */
     if(reply->questions < 1) {
       LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Add question for legacy query\n"));
-      res = mdns_add_question(reply, &host, DNS_RRTYPE_AAAA, DNS_RRCLASS_IN, 0);
+      res = mdns_add_question(reply, host, DNS_RRTYPE_AAAA, DNS_RRCLASS_IN, 0);
       if (res != ERR_OK) {
-        return res;
+        goto cleanup;
       }
       reply->questions = 1;
     }
@@ -343,9 +376,12 @@ mdns_add_aaaa_answer(struct mdns_outpacket *reply, struct mdns_outmsg *msg,
     ttl = MDNS_TTL_10;
   }
   LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Responding with AAAA record\n"));
-  return mdns_add_answer(reply, &host, DNS_RRTYPE_AAAA, DNS_RRCLASS_IN, msg->cache_flush,
-                         ttl, (const u8_t *) netif_ip6_addr(netif, addrindex),
-                         sizeof(ip6_addr_p_t), NULL);
+  res = mdns_add_answer(reply, host, DNS_RRTYPE_AAAA, DNS_RRCLASS_IN, msg->cache_flush,
+                        ttl, (const u8_t *) netif_ip6_addr(netif, addrindex),
+                        sizeof(ip6_addr_p_t), NULL);
+ cleanup:
+  mdns_domain_free(host);
+  return res;
 }
 
 /** Write a x.y.z.ip6.arpa -> hostname.local PTR RR to outpacket */
@@ -355,9 +391,16 @@ mdns_add_hostv6_ptr_answer(struct mdns_outpacket *reply, struct mdns_outmsg *msg
 {
   err_t res;
   u32_t ttl = MDNS_TTL_120;
-  struct mdns_domain host, revhost;
-  mdns_build_host_domain(&host, netif_mdns_data(netif));
-  mdns_build_reverse_v6_domain(&revhost, netif_ip6_addr(netif, addrindex));
+  struct mdns_domain *host, *revhost;
+  host = mdns_build_host_domain(netif_mdns_data(netif));
+  if (host == NULL) {
+    return ERR_MEM;
+  }
+  revhost = mdns_build_reverse_v6_domain(netif_ip6_addr(netif, addrindex));
+  if (revhost == NULL) {
+    res = ERR_MEM;
+    goto cleanup_host;
+  }
   /* When answering to a legacy querier, we need to repeat the question and
    * limit the ttl to the short legacy ttl */
   if(msg->legacy_query) {
@@ -365,9 +408,9 @@ mdns_add_hostv6_ptr_answer(struct mdns_outpacket *reply, struct mdns_outmsg *msg
      * (max one question), not for the additional records. */
     if(reply->questions < 1) {
       LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Add question for legacy query\n"));
-      res = mdns_add_question(reply, &revhost, DNS_RRTYPE_PTR, DNS_RRCLASS_IN, 0);
+      res = mdns_add_question(reply, revhost, DNS_RRTYPE_PTR, DNS_RRCLASS_IN, 0);
       if (res != ERR_OK) {
-        return res;
+        goto cleanup;
       }
       reply->questions = 1;
     }
@@ -375,8 +418,13 @@ mdns_add_hostv6_ptr_answer(struct mdns_outpacket *reply, struct mdns_outmsg *msg
     ttl = MDNS_TTL_10;
   }
   LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Responding with v6 PTR record\n"));
-  return mdns_add_answer(reply, &revhost, DNS_RRTYPE_PTR, DNS_RRCLASS_IN,
-                         msg->cache_flush, ttl, NULL, 0, &host);
+  res = mdns_add_answer(reply, revhost, DNS_RRTYPE_PTR, DNS_RRCLASS_IN,
+                        msg->cache_flush, ttl, NULL, 0, host);
+ cleanup:
+  mdns_domain_free(revhost);
+ cleanup_host:
+  mdns_domain_free(host);
+  return res;
 }
 #endif
 
@@ -387,9 +435,16 @@ mdns_add_servicetype_ptr_answer(struct mdns_outpacket *reply, struct mdns_outmsg
 {
   err_t res;
   u32_t ttl = MDNS_TTL_4500;
-  struct mdns_domain service_type, service_dnssd;
-  mdns_build_service_domain(&service_type, service, 0);
-  mdns_build_dnssd_domain(&service_dnssd);
+  struct mdns_domain *service_type, *service_dnssd;
+  service_type = mdns_build_service_domain(service, 0);
+  if (service_type == NULL) {
+    return ERR_MEM;
+  }
+  service_dnssd = mdns_build_dnssd_domain();
+  if (service_dnssd == NULL) {
+    res = ERR_MEM;
+    goto cleanup_service_type;
+  }
   /* When answering to a legacy querier, we need to repeat the question and
    * limit the ttl to the short legacy ttl */
   if(msg->legacy_query) {
@@ -397,9 +452,9 @@ mdns_add_servicetype_ptr_answer(struct mdns_outpacket *reply, struct mdns_outmsg
      * (max one question), not for the additional records. */
     if(reply->questions < 1) {
       LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Add question for legacy query\n"));
-      res = mdns_add_question(reply, &service_dnssd, DNS_RRTYPE_PTR, DNS_RRCLASS_IN, 0);
+      res = mdns_add_question(reply, service_dnssd, DNS_RRTYPE_PTR, DNS_RRCLASS_IN, 0);
       if (res != ERR_OK) {
-        return res;
+        goto cleanup;
       }
       reply->questions = 1;
     }
@@ -407,8 +462,13 @@ mdns_add_servicetype_ptr_answer(struct mdns_outpacket *reply, struct mdns_outmsg
     ttl = MDNS_TTL_10;
   }
   LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Responding with service type PTR record\n"));
-  return mdns_add_answer(reply, &service_dnssd, DNS_RRTYPE_PTR, DNS_RRCLASS_IN,
-                         0, ttl, NULL, 0, &service_type);
+  res = mdns_add_answer(reply, service_dnssd, DNS_RRTYPE_PTR, DNS_RRCLASS_IN,
+                        0, ttl, NULL, 0, service_type);
+ cleanup:
+  mdns_domain_free(service_dnssd);
+ cleanup_service_type:
+  mdns_domain_free(service_type);
+  return res;
 }
 
 /** Write a servicetype -> servicename PTR RR to outpacket */
@@ -418,9 +478,16 @@ mdns_add_servicename_ptr_answer(struct mdns_outpacket *reply, struct mdns_outmsg
 {
   err_t res;
   u32_t ttl = MDNS_TTL_120;
-  struct mdns_domain service_type, service_instance;
-  mdns_build_service_domain(&service_type, service, 0);
-  mdns_build_service_domain(&service_instance, service, 1);
+  struct mdns_domain *service_type, *service_instance;
+  service_type = mdns_build_service_domain(service, 0);
+  if (service_type == NULL) {
+    return ERR_MEM;
+  }
+  service_instance = mdns_build_service_domain(service, 1);
+  if (service_instance == NULL) {
+    res = ERR_MEM;
+    goto cleanup_service_type;
+  }
   /* When answering to a legacy querier, we need to repeat the question and
    * limit the ttl to the short legacy ttl */
   if(msg->legacy_query) {
@@ -428,9 +495,9 @@ mdns_add_servicename_ptr_answer(struct mdns_outpacket *reply, struct mdns_outmsg
      * (max one question), not for the additional records. */
     if(reply->questions < 1) {
       LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Add question for legacy query\n"));
-      res = mdns_add_question(reply, &service_type, DNS_RRTYPE_PTR, DNS_RRCLASS_IN, 0);
+      res = mdns_add_question(reply, service_type, DNS_RRTYPE_PTR, DNS_RRCLASS_IN, 0);
       if (res != ERR_OK) {
-        return res;
+        goto cleanup;
       }
       reply->questions = 1;
     }
@@ -438,8 +505,13 @@ mdns_add_servicename_ptr_answer(struct mdns_outpacket *reply, struct mdns_outmsg
     ttl = MDNS_TTL_10;
   }
   LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Responding with service name PTR record\n"));
-  return mdns_add_answer(reply, &service_type, DNS_RRTYPE_PTR, DNS_RRCLASS_IN,
-                         0, ttl, NULL, 0, &service_instance);
+  res = mdns_add_answer(reply, service_type, DNS_RRTYPE_PTR, DNS_RRCLASS_IN,
+                        0, ttl, NULL, 0, service_instance);
+ cleanup:
+  mdns_domain_free(service_instance);
+ cleanup_service_type:
+  mdns_domain_free(service_type);
+  return res;
 }
 
 /** Write a SRV RR to outpacket */
@@ -449,25 +521,32 @@ mdns_add_srv_answer(struct mdns_outpacket *reply, struct mdns_outmsg *msg,
 {
   err_t res;
   u32_t ttl = MDNS_TTL_120;
-  struct mdns_domain service_instance, srvhost;
+  struct mdns_domain *service_instance, *srvhost;
   u16_t srvdata[3];
-  mdns_build_service_domain(&service_instance, service, 1);
-  mdns_build_host_domain(&srvhost, mdns);
+  service_instance = mdns_build_service_domain(service, 1);
+  if (service_instance == NULL) {
+    return ERR_MEM;
+  }
+  srvhost = mdns_build_host_domain(mdns);
+  if (srvhost == NULL) {
+    res = ERR_MEM;
+    goto cleanup_service_instance;
+  }
   if (msg->legacy_query) {
     /* RFC 6762 section 18.14:
      * In legacy unicast responses generated to answer legacy queries,
      * name compression MUST NOT be performed on SRV records.
      */
-    srvhost.skip_compression = 1;
+    srvhost->skip_compression = 1;
     /* When answering to a legacy querier, we need to repeat the question and
      * limit the ttl to the short legacy ttl.
      * Repeating the question only needs to be done for the question asked
      * (max one question), not for the additional records. */
     if(reply->questions < 1) {
       LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Add question for legacy query\n"));
-      res = mdns_add_question(reply, &service_instance, DNS_RRTYPE_SRV, DNS_RRCLASS_IN, 0);
+      res = mdns_add_question(reply, service_instance, DNS_RRTYPE_SRV, DNS_RRCLASS_IN, 0);
       if (res != ERR_OK) {
-        return res;
+        goto cleanup;
       }
       reply->questions = 1;
     }
@@ -478,9 +557,14 @@ mdns_add_srv_answer(struct mdns_outpacket *reply, struct mdns_outmsg *msg,
   srvdata[1] = lwip_htons(SRV_WEIGHT);
   srvdata[2] = lwip_htons(service->port);
   LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Responding with SRV record\n"));
-  return mdns_add_answer(reply, &service_instance, DNS_RRTYPE_SRV, DNS_RRCLASS_IN,
-                         msg->cache_flush, ttl,
-                         (const u8_t *) &srvdata, sizeof(srvdata), &srvhost);
+  res = mdns_add_answer(reply, service_instance, DNS_RRTYPE_SRV, DNS_RRCLASS_IN,
+                        msg->cache_flush, ttl,
+                        (const u8_t *) &srvdata, sizeof(srvdata), srvhost);
+ cleanup:
+  mdns_domain_free(srvhost);
+ cleanup_service_instance:
+  mdns_domain_free(service_instance);
+  return res;
 }
 
 /** Write a TXT RR to outpacket */
@@ -490,9 +574,12 @@ mdns_add_txt_answer(struct mdns_outpacket *reply, struct mdns_outmsg *msg,
 {
   err_t res;
   u32_t ttl = MDNS_TTL_120;
-  struct mdns_domain service_instance;
-  mdns_build_service_domain(&service_instance, service, 1);
-  mdns_prepare_txtdata(service);
+  struct mdns_domain *service_instance;
+  LWIP_ASSERT("mdns_add_txt_answer: txtdata", service->txtdata);
+  service_instance = mdns_build_service_domain(service, 1);
+  if (service_instance == NULL) {
+    return ERR_MEM;
+  }
   /* When answering to a legacy querier, we need to repeat the question and
    * limit the ttl to the short legacy ttl */
   if(msg->legacy_query) {
@@ -500,9 +587,9 @@ mdns_add_txt_answer(struct mdns_outpacket *reply, struct mdns_outmsg *msg,
      * (max one question), not for the additional records. */
     if(reply->questions < 1) {
       LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Add question for legacy query\n"));
-      res = mdns_add_question(reply, &service_instance, DNS_RRTYPE_TXT, DNS_RRCLASS_IN, 0);
+      res = mdns_add_question(reply, service_instance, DNS_RRTYPE_TXT, DNS_RRCLASS_IN, 0);
       if (res != ERR_OK) {
-        return res;
+        goto cleanup;
       }
       reply->questions = 1;
     }
@@ -510,9 +597,12 @@ mdns_add_txt_answer(struct mdns_outpacket *reply, struct mdns_outmsg *msg,
     ttl = MDNS_TTL_10;
   }
   LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Responding with TXT record\n"));
-  return mdns_add_answer(reply, &service_instance, DNS_RRTYPE_TXT, DNS_RRCLASS_IN,
-                         msg->cache_flush, ttl, (u8_t *) &service->txtdata.name,
-                         service->txtdata.length, NULL);
+  res = mdns_add_answer(reply, service_instance, DNS_RRTYPE_TXT, DNS_RRCLASS_IN,
+                        msg->cache_flush, ttl, (u8_t *) service->txtdata->name,
+                        service->txtdata->length, NULL);
+ cleanup:
+  mdns_domain_free(service_instance);
+  return res;
 }
 
 
@@ -557,11 +647,15 @@ mdns_add_query_question_to_outpacket(struct mdns_outpacket *outpkt, struct mdns_
   /* Write legacy query question */
   if(msg->query) {
     struct mdns_request *req = msg->query;
-    struct mdns_domain dom;
+    struct mdns_domain *dom;
     /* Build question domain */
-    mdns_build_request_domain(&dom, req, req->name[0]);
+    dom = mdns_build_request_domain(req, req->name && req->name[0]);
+    if (dom == NULL) {
+      return ERR_MEM;
+    }
     /* Add query question to output packet */
-    res = mdns_add_question(outpkt, &dom, req->qtype, DNS_RRCLASS_IN, 0);
+    res = mdns_add_question(outpkt, dom, req->qtype, DNS_RRCLASS_IN, 0);
+    mdns_domain_free(dom);
     if (res != ERR_OK) {
       return res;
     }
@@ -678,11 +772,16 @@ mdns_create_outpacket(struct netif *netif, struct mdns_outmsg *msg,
     }
 
     if (msg->serv_replies[i] & REPLY_SERVICE_TXT) {
-      res = mdns_add_txt_answer(outpkt, msg, service);
-      if (res != ERR_OK) {
-        return res;
+      mdns_prepare_txtdata(service);
+      if (service->txtdata) {
+          res = mdns_add_txt_answer(outpkt, msg, service);
+          mdns_domain_free(service->txtdata);
+          service->txtdata = NULL;
+          if (res != ERR_OK) {
+              return res;
+          }
+          answers++;
       }
-      answers++;
     }
   }
 
@@ -713,11 +812,16 @@ mdns_create_outpacket(struct netif *netif, struct mdns_outmsg *msg,
       }
 
       if (!(msg->serv_replies[i] & REPLY_SERVICE_TXT)) {
-        res = mdns_add_txt_answer(outpkt, msg, service);
-        if (res != ERR_OK) {
-          return res;
+        mdns_prepare_txtdata(service);
+        if (service->txtdata) {
+            res = mdns_add_txt_answer(outpkt, msg, service);
+            mdns_domain_free(service->txtdata);
+            service->txtdata = NULL;
+            if (res != ERR_OK) {
+                return res;
+            }
+            outpkt->additional++;
         }
-        outpkt->additional++;
       }
     }
 

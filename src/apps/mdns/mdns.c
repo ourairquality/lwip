@@ -87,6 +87,30 @@
 #error "If you want to use MDNS, you have to define LWIP_RAND=(random function) in your lwipopts.h"
 #endif
 
+#if MEM_LIBC_MALLOC
+#define STRNDUP(s, n) strndup(s, n)
+#else
+#define STRNDUP(s, n) mem_strndup(s, n)
+char * mem_strndup(const char *s, size_t n);
+char *
+mem_strndup(const char *s, size_t n)
+{
+  size_t len = 0;
+  char *copy;
+
+  while (n-- > 0 && s[len]) {
+    len++;
+  }
+
+  copy = (char *) mem_malloc(len + 1);
+  if (copy) {
+    memcpy(copy, s, len);
+    copy[len] = '\0';
+  }
+  return copy;
+}
+#endif
+
 #if LWIP_IPV4
 #include "lwip/igmp.h"
 /* IPv4 multicast group 224.0.0.251 */
@@ -102,7 +126,7 @@ static const ip_addr_t v6group = DNS_MQUERY_IPV6_GROUP_INIT;
 #define MDNS_IP_TTL  255
 
 #if LWIP_MDNS_SEARCH
-static struct mdns_request mdns_requests[MDNS_MAX_REQUESTS];
+static struct mdns_request *mdns_requests[MDNS_MAX_REQUESTS];
 #endif
 
 static u8_t mdns_netif_client_id;
@@ -187,6 +211,107 @@ struct mdns_answer_list {
   u16_t size;
 };
 
+static struct mdns_service *
+mdns_service_alloc(void)
+{
+  return (struct mdns_service *)mem_calloc(1, sizeof(struct mdns_service));
+}
+
+static void
+mdns_service_free(struct mdns_service *srv)
+{
+  struct mdns_domain *domain = srv->txtdata;
+  char *name = srv->name;
+  char *service = srv->service;
+  if (domain) {
+    mdns_domain_free(srv->txtdata);
+  }
+  if (name) {
+    mem_free(name);
+  }
+  if (service) {
+    mem_free(service);
+  }
+  mem_free(srv);
+}
+
+static void
+mdns_host_free(struct mdns_host *mdns)
+{
+  int i;
+  char *name = mdns->name;
+
+  if (name) {
+    mem_free(name);
+  }
+
+  for (i = 0; i < MDNS_MAX_SERVICES; i++) {
+    struct mdns_service *service = mdns->services[i];
+    if (service) {
+      mdns_service_free(service);
+    }
+  }
+
+  mem_free(mdns);
+}
+
+static struct mdns_question *
+mdns_question_alloc(void)
+{
+  return (struct mdns_question *)mem_calloc(1, sizeof(struct mdns_question));
+}
+
+static void
+mdns_question_free(struct mdns_question *q)
+{
+  struct mdns_domain *domain = q->info.domain;
+  if (domain) {
+    mdns_domain_free(q->info.domain);
+  }
+  mem_free(q);
+}
+
+static struct mdns_answer *
+mdns_answer_alloc(void)
+{
+  return (struct mdns_answer *)mem_calloc(1, sizeof(struct mdns_answer));
+}
+
+static void
+mdns_answer_free(struct mdns_answer *q)
+{
+  struct mdns_domain *domain = q->info.domain;
+  if (domain) {
+    mdns_domain_free(domain);
+  }
+  mem_free(q);
+}
+
+static struct mdns_request *
+mdns_request_alloc(void)
+{
+  return (struct mdns_request *)mem_calloc(1, sizeof(struct mdns_request));
+}
+
+static void
+mdns_request_free(struct mdns_request *req)
+{
+  char *name;
+  struct mdns_domain *service;
+  name = req->name;
+  if (name) {
+    mem_free(name);
+    req->name = NULL;
+  }
+  service = req->service;
+  if (service) {
+    mdns_domain_free(service);
+    req->service = NULL;
+  }
+  mem_free(req);
+}
+
+
 static err_t mdns_parse_pkt_questions(struct netif *netif,
                                       struct mdns_packet *pkt,
                                       struct mdns_outmsg *reply);
@@ -230,9 +355,8 @@ get_mdns_pcb(void)
 static int
 check_host(struct netif *netif, struct mdns_rr_info *rr, u8_t *reverse_v6_reply)
 {
-  err_t res;
   int replies = 0;
-  struct mdns_domain mydomain;
+  struct mdns_domain *mydomain;
 
   LWIP_UNUSED_ARG(reverse_v6_reply); /* if ipv6 is disabled */
 
@@ -247,42 +371,53 @@ check_host(struct netif *netif, struct mdns_rr_info *rr, u8_t *reverse_v6_reply)
     int i;
     for (i = 0; i < LWIP_IPV6_NUM_ADDRESSES; i++) {
       if (ip6_addr_isvalid(netif_ip6_addr_state(netif, i))) {
-        res = mdns_build_reverse_v6_domain(&mydomain, netif_ip6_addr(netif, i));
-        if (res == ERR_OK && mdns_domain_eq(&rr->domain, &mydomain)) {
-          replies |= REPLY_HOST_PTR_V6;
-          /* Mark which addresses where requested */
-          if (reverse_v6_reply) {
-            *reverse_v6_reply |= (1 << i);
+        struct mdns_domain *myv6domain;
+        myv6domain = mdns_build_reverse_v6_domain(netif_ip6_addr(netif, i));
+        if (myv6domain) {
+          if (mdns_domain_eq(rr->domain, myv6domain)) {
+            replies |= REPLY_HOST_PTR_V6;
+            /* Mark which addresses where requested */
+            if (reverse_v6_reply) {
+              *reverse_v6_reply |= (1 << i);
+            }
           }
+          mdns_domain_free(myv6domain);
         }
       }
     }
 #endif
 #if LWIP_IPV4
     if (!ip4_addr_isany_val(*netif_ip4_addr(netif))) {
-      res = mdns_build_reverse_v4_domain(&mydomain, netif_ip4_addr(netif));
-      if (res == ERR_OK && mdns_domain_eq(&rr->domain, &mydomain)) {
-        replies |= REPLY_HOST_PTR_V4;
+      struct mdns_domain *myv4domain;
+      myv4domain = mdns_build_reverse_v4_domain(netif_ip4_addr(netif));
+      if (myv4domain) {
+        if (mdns_domain_eq(rr->domain, myv4domain)) {
+          replies |= REPLY_HOST_PTR_V4;
+        }
+        mdns_domain_free(myv4domain);
       }
     }
 #endif
   }
 
-  res = mdns_build_host_domain(&mydomain, NETIF_TO_HOST(netif));
-  /* Handle requests for our hostname */
-  if (res == ERR_OK && mdns_domain_eq(&rr->domain, &mydomain)) {
-    /* TODO return NSEC if unsupported protocol requested */
+  mydomain = mdns_build_host_domain(NETIF_TO_HOST(netif));
+  if (mydomain) {
+    /* Handle requests for our hostname */
+    if (mdns_domain_eq(rr->domain, mydomain)) {
+      /* TODO return NSEC if unsupported protocol requested */
 #if LWIP_IPV4
-    if (!ip4_addr_isany_val(*netif_ip4_addr(netif))
-        && (rr->type == DNS_RRTYPE_A || rr->type == DNS_RRTYPE_ANY)) {
-      replies |= REPLY_HOST_A;
-    }
+      if (!ip4_addr_isany_val(*netif_ip4_addr(netif))
+          && (rr->type == DNS_RRTYPE_A || rr->type == DNS_RRTYPE_ANY)) {
+        replies |= REPLY_HOST_A;
+      }
 #endif
 #if LWIP_IPV6
-    if (rr->type == DNS_RRTYPE_AAAA || rr->type == DNS_RRTYPE_ANY) {
-      replies |= REPLY_HOST_AAAA;
-    }
+      if (rr->type == DNS_RRTYPE_AAAA || rr->type == DNS_RRTYPE_ANY) {
+        replies |= REPLY_HOST_AAAA;
+      }
 #endif
+    }
+    mdns_domain_free(mydomain);
   }
 
   return replies;
@@ -297,38 +432,46 @@ check_host(struct netif *netif, struct mdns_rr_info *rr, u8_t *reverse_v6_reply)
 static int
 check_service(struct mdns_service *service, struct mdns_rr_info *rr)
 {
-  err_t res;
   int replies = 0;
-  struct mdns_domain mydomain;
+  struct mdns_domain *mydomain;
 
   if (rr->klass != DNS_RRCLASS_IN && rr->klass != DNS_RRCLASS_ANY) {
     /* Invalid class */
     return 0;
   }
 
-  res = mdns_build_dnssd_domain(&mydomain);
-  if (res == ERR_OK && mdns_domain_eq(&rr->domain, &mydomain) &&
-      (rr->type == DNS_RRTYPE_PTR || rr->type == DNS_RRTYPE_ANY)) {
-    /* Request for all service types */
-    replies |= REPLY_SERVICE_TYPE_PTR;
+  mydomain = mdns_build_dnssd_domain();
+  if (mydomain) {
+    if (mdns_domain_eq(rr->domain, mydomain) &&
+        (rr->type == DNS_RRTYPE_PTR || rr->type == DNS_RRTYPE_ANY)) {
+      /* Request for all service types */
+      replies |= REPLY_SERVICE_TYPE_PTR;
+    }
+    mdns_domain_free(mydomain);
   }
 
-  res = mdns_build_service_domain(&mydomain, service, 0);
-  if (res == ERR_OK && mdns_domain_eq(&rr->domain, &mydomain) &&
-      (rr->type == DNS_RRTYPE_PTR || rr->type == DNS_RRTYPE_ANY)) {
-    /* Request for the instance of my service */
-    replies |= REPLY_SERVICE_NAME_PTR;
+  mydomain = mdns_build_service_domain(service, 0);
+  if (mydomain) {
+    if (mdns_domain_eq(rr->domain, mydomain) &&
+        (rr->type == DNS_RRTYPE_PTR || rr->type == DNS_RRTYPE_ANY)) {
+      /* Request for the instance of my service */
+      replies |= REPLY_SERVICE_NAME_PTR;
+    }
+    mdns_domain_free(mydomain);
   }
 
-  res = mdns_build_service_domain(&mydomain, service, 1);
-  if (res == ERR_OK && mdns_domain_eq(&rr->domain, &mydomain)) {
-    /* Request for info about my service */
-    if (rr->type == DNS_RRTYPE_SRV || rr->type == DNS_RRTYPE_ANY) {
-      replies |= REPLY_SERVICE_SRV;
+  mydomain = mdns_build_service_domain(service, 1);
+  if (mydomain) {
+    if (mdns_domain_eq(rr->domain, mydomain)) {
+      /* Request for info about my service */
+      if (rr->type == DNS_RRTYPE_SRV || rr->type == DNS_RRTYPE_ANY) {
+        replies |= REPLY_SERVICE_SRV;
+      }
+      if (rr->type == DNS_RRTYPE_TXT || rr->type == DNS_RRTYPE_ANY) {
+        replies |= REPLY_SERVICE_TXT;
+      }
     }
-    if (rr->type == DNS_RRTYPE_TXT || rr->type == DNS_RRTYPE_ANY) {
-      replies |= REPLY_SERVICE_TXT;
-    }
+    mdns_domain_free(mydomain);
   }
 
   return replies;
@@ -344,31 +487,40 @@ check_service(struct mdns_service *service, struct mdns_rr_info *rr)
 static int
 check_request(struct mdns_request *request, struct mdns_rr_info *rr)
 {
-  err_t res;
   int replies = 0;
-  struct mdns_domain mydomain;
+  struct mdns_domain *mydomain;
 
   if (rr->klass != DNS_RRCLASS_IN && rr->klass != DNS_RRCLASS_ANY) {
     /* Invalid class */
     return 0;
   }
 
-  res = mdns_build_request_domain(&mydomain, request, 0);
-  if (res == ERR_OK && mdns_domain_eq(&rr->domain, &mydomain) &&
-      (rr->type == DNS_RRTYPE_PTR || rr->type == DNS_RRTYPE_ANY)) {
-    /* Request for the instance of my service */
-    replies |= REPLY_SERVICE_TYPE_PTR;
-  }
-  res = mdns_build_request_domain(&mydomain, request, 1);
-  if (res == ERR_OK && mdns_domain_eq(&rr->domain, &mydomain)) {
-    /* Request for info about my service */
-    if (rr->type == DNS_RRTYPE_SRV || rr->type == DNS_RRTYPE_ANY) {
-      replies |= REPLY_SERVICE_SRV;
+  mydomain = mdns_build_request_domain(request, 0);
+  if (mydomain) {
+    if (mdns_domain_eq(rr->domain, mydomain) &&
+        (rr->type == DNS_RRTYPE_PTR || rr->type == DNS_RRTYPE_ANY)) {
+      /* Request for the instance of my service */
+      replies |= REPLY_SERVICE_TYPE_PTR;
     }
-    if (rr->type == DNS_RRTYPE_TXT || rr->type == DNS_RRTYPE_ANY) {
-      replies |= REPLY_SERVICE_TXT;
+    mdns_domain_free(mydomain);
+  }
+
+  if (request->name) {
+    mydomain = mdns_build_request_domain(request, 1);
+    if (mydomain) {
+      if (mdns_domain_eq(rr->domain, mydomain)) {
+        /* Request for info about my service */
+        if (rr->type == DNS_RRTYPE_SRV || rr->type == DNS_RRTYPE_ANY) {
+          replies |= REPLY_SERVICE_SRV;
+        }
+        if (rr->type == DNS_RRTYPE_TXT || rr->type == DNS_RRTYPE_ANY) {
+          replies |= REPLY_SERVICE_TXT;
+        }
+      }
+      mdns_domain_free(mydomain);
     }
   }
+
   return replies;
 }
 #endif
@@ -376,6 +528,7 @@ check_request(struct mdns_request *request, struct mdns_rr_info *rr)
 /**
  * Helper function for mdns_read_question/mdns_read_answer
  * Reads a domain, type and class from the packet
+ * The caller is expected to free the info domain, even on an error.
  * @param pkt The MDNS packet to read from. The parse_offset field will be
  *            incremented to point to the next unparsed byte.
  * @param info The struct to fill with domain, type and class
@@ -413,33 +566,39 @@ mdns_read_rr_info(struct mdns_packet *pkt, struct mdns_rr_info *info)
  * @param pkt The MDNS packet to read from. The questions_left field will be decremented
  *            and the parse_offset will be updated.
  * @param question The struct to fill with question data
- * @return ERR_OK on success, an err_t otherwise
+ * @return The question struct on success, otherwise NULL.
  */
-static err_t
-mdns_read_question(struct mdns_packet *pkt, struct mdns_question *question)
+static struct mdns_question *
+mdns_read_question(struct mdns_packet *pkt)
 {
   /* Safety check */
   if (pkt->pbuf->tot_len < pkt->parse_offset) {
-    return ERR_VAL;
+    return NULL;
   }
 
   if (pkt->questions_left) {
     err_t res;
+    struct mdns_question *question;
+
     pkt->questions_left--;
 
-    memset(question, 0, sizeof(struct mdns_question));
+    question = mdns_question_alloc();
+    if (question == NULL) {
+      return NULL;
+    }
     res = mdns_read_rr_info(pkt, &question->info);
     if (res != ERR_OK) {
-      return res;
+      mdns_question_free(question);
+      return NULL;
     }
 
     /* Extract unicast flag from class field */
     question->unicast = question->info.klass & 0x8000;
     question->info.klass &= 0x7FFF;
 
-    return ERR_OK;
+    return question;
   }
-  return ERR_VAL;
+  return NULL;
 }
 
 /**
@@ -447,33 +606,37 @@ mdns_read_question(struct mdns_packet *pkt, struct mdns_question *question)
  * The variable length reply is not copied, its pbuf offset and length is stored instead.
  * @param pkt The MDNS packet to read. The num_left field will be decremented and
  *            the parse_offset will be updated.
- * @param answer    The struct to fill with answer data
  * @param num_left  number of answers left -> answers, authoritative or additional
- * @return ERR_OK on success, an err_t otherwise
+ * @return The answer structure on success, otherwise NULL.
  */
-static err_t
-mdns_read_answer(struct mdns_packet *pkt, struct mdns_answer *answer, u16_t *num_left)
+static struct mdns_answer *
+mdns_read_answer(struct mdns_packet *pkt, u16_t *num_left)
 {
   /* Read questions first */
   if (pkt->questions_left) {
-    return ERR_VAL;
+    return NULL;
   }
 
   /* Safety check */
   if (pkt->pbuf->tot_len < pkt->parse_offset) {
-    return ERR_VAL;
+    return NULL;
   }
 
   if (*num_left) {
+    struct mdns_answer *answer;
     u16_t copied, field16;
     u32_t ttl;
     err_t res;
     (*num_left)--;
 
-    memset(answer, 0, sizeof(struct mdns_answer));
+    answer = mdns_answer_alloc();
+    if (answer == NULL) {
+      return NULL;
+    }
     res = mdns_read_rr_info(pkt, &answer->info);
     if (res != ERR_OK) {
-      return res;
+      mdns_answer_free(answer);
+      return NULL;
     }
 
     /* Extract cache_flush flag from class field */
@@ -482,14 +645,16 @@ mdns_read_answer(struct mdns_packet *pkt, struct mdns_answer *answer, u16_t *num
 
     copied = pbuf_copy_partial(pkt->pbuf, &ttl, sizeof(ttl), pkt->parse_offset);
     if (copied != sizeof(ttl)) {
-      return ERR_VAL;
+      mdns_answer_free(answer);
+      return NULL;
     }
     pkt->parse_offset += copied;
     answer->ttl = lwip_ntohl(ttl);
 
     copied = pbuf_copy_partial(pkt->pbuf, &field16, sizeof(field16), pkt->parse_offset);
     if (copied != sizeof(field16)) {
-      return ERR_VAL;
+      mdns_answer_free(answer);
+      return NULL;
     }
     pkt->parse_offset += copied;
     answer->rd_length = lwip_ntohs(field16);
@@ -497,9 +662,9 @@ mdns_read_answer(struct mdns_packet *pkt, struct mdns_answer *answer, u16_t *num
     answer->rd_offset = pkt->parse_offset;
     pkt->parse_offset += answer->rd_length;
 
-    return ERR_OK;
+    return answer;
   }
-  return ERR_VAL;
+  return NULL;
 }
 
 /**
@@ -564,7 +729,7 @@ mdns_lexicographical_comparison(struct mdns_packet *pkt_a, struct mdns_packet *p
   int len, i;
   u8_t a_rd, b_rd;
   u16_t res;
-  struct mdns_domain domain_a, domain_b;
+  struct mdns_domain *domain_a, *domain_b;
 
   /* Compare classes */
   if (ans_a->info.klass != ans_b->info.klass) {
@@ -649,44 +814,50 @@ mdns_lexicographical_comparison(struct mdns_packet *pkt_a, struct mdns_packet *p
     /* Decompress names if compressed and save in domain_a or domain_b */
     res = mdns_readname(pkt_a->pbuf, ans_a->rd_offset + 6, &domain_a);
     if (res == MDNS_READNAME_ERROR) {
+      mdns_domain_free(domain_a);
       return ERR_VAL;
     }
     res = mdns_readname(pkt_b->pbuf, ans_b->rd_offset + 6, &domain_b);
     if (res == MDNS_READNAME_ERROR) {
+      mdns_domain_free(domain_a);
+      mdns_domain_free(domain_b);
       return ERR_VAL;
     }
-    LWIP_DEBUGF(MDNS_DEBUG, ("mDNS: domain a: len = %d, name = ", domain_a.name[0]));
-    mdns_domain_debug_print(&domain_a);
-    LWIP_DEBUGF(MDNS_DEBUG, ("mDNS: domain b: len = %d, name = ", domain_b.name[0]));
-    mdns_domain_debug_print(&domain_b);
+    LWIP_DEBUGF(MDNS_DEBUG, ("mDNS: domain a: len = %d, name = ", domain_a->name[0]));
+    mdns_domain_debug_print(domain_a);
+    LWIP_DEBUGF(MDNS_DEBUG, ("mDNS: domain b: len = %d, name = ", domain_b->name[0]));
+    mdns_domain_debug_print(domain_b);
     /* Compare names pairwise */
-    len = LWIP_MIN(domain_a.length, domain_b.length);
+    len = LWIP_MIN(domain_a->length, domain_b->length);
     for (i = 0; i < len; i++) {
-      if (domain_a.name[i] != domain_b.name[i]) {
-        if (domain_a.name[i] > domain_b.name[i]) {
+      if (domain_a->name[i] != domain_b->name[i]) {
+        if (domain_a->name[i] > domain_b->name[i]) {
           *result = MDNS_LEXICOGRAPHICAL_LATER;
-          return ERR_OK;
+          goto ok;
         }
         else {
           *result = MDNS_LEXICOGRAPHICAL_EARLIER;
-          return ERR_OK;
+          goto ok;
         }
       }
     }
     /* If the overlapping data is the same, compare the length */
-    if (domain_a.length != domain_b.length) {
-      if (domain_a.length > domain_b.length) {
+    if (domain_a->length != domain_b->length) {
+      if (domain_a->length > domain_b->length) {
         *result = MDNS_LEXICOGRAPHICAL_LATER;
-        return ERR_OK;
+        goto ok;
       }
       else {
         *result = MDNS_LEXICOGRAPHICAL_EARLIER;
-        return ERR_OK;
+        goto ok;
       }
     }
   }
   /* They are exactly the same */
   *result = MDNS_LEXICOGRAPHICAL_EQUAL;
+ ok:
+  mdns_domain_free(domain_a);
+  mdns_domain_free(domain_b);
   return ERR_OK;
 }
 
@@ -723,7 +894,7 @@ mdns_push_answer_to_sorted_list(struct mdns_answer_list *a_list,
                                 struct mdns_answer *new_answer)
 {
   int i;
-  struct mdns_answer a;
+  struct mdns_answer *a;
   int pos = a_list->size;
   err_t res = ERR_OK;
   u8_t result;
@@ -738,13 +909,14 @@ mdns_push_answer_to_sorted_list(struct mdns_answer_list *a_list,
   for (i = 0; i < a_list->size; i++) {
     /* Read answers already in the list from pkt */
     pkt->parse_offset = a_list->offset[i];
-    res = mdns_read_answer(pkt, &a, &num_left);
-    if (res != ERR_OK) {
+    a = mdns_read_answer(pkt, &num_left);
+    if (a == NULL) {
       LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Failed to parse answer, skipping probe packet\n"));
-      return res;
+      return ERR_VAL;
     }
     /* Compare them with the new answer to find it's place */
-    res = mdns_lexicographical_comparison(pkt, pkt, &a, new_answer, &result);
+    res = mdns_lexicographical_comparison(pkt, pkt, a, new_answer, &result);
+    mdns_answer_free(a);
     if (res != ERR_OK) {
       LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Failed to compare answers, skipping probe packet\n"));
       return res;
@@ -778,7 +950,7 @@ mdns_is_answer_to_question(struct mdns_question *q, struct mdns_answer *a)
 {
   if (q->info.type == DNS_RRTYPE_ANY || q->info.type == a->info.type) {
     /* The types match or question type is any */
-    if (mdns_domain_eq(&q->info.domain, &a->info.domain)) {
+    if (mdns_domain_eq(q->info.domain, a->info.domain)) {
       return 1;
     }
   }
@@ -840,8 +1012,7 @@ static void
 mdns_handle_probe_tiebreaking(struct netif *netif, struct mdns_packet *pkt)
 {
   struct mdns_host *mdns = NETIF_TO_HOST(netif);
-  struct mdns_question pkt_q, my_q, q_dummy;
-  struct mdns_answer pkt_a, my_a;
+  struct mdns_question *my_q = NULL;
   struct mdns_outmsg myprobe_msg;
   struct mdns_outpacket myprobe_outpkt;
   struct mdns_packet myprobe_inpkt;
@@ -868,8 +1039,8 @@ mdns_handle_probe_tiebreaking(struct netif *netif, struct mdns_packet *pkt)
   /* Loop over all our probes to search for matches */
   while (myprobe_inpkt.questions_left) {
     /* Read one of our probe questions to check if pkt contains same question */
-    res = mdns_read_question(&myprobe_inpkt, &my_q);
-    if (res != ERR_OK) {
+    my_q = mdns_read_question(&myprobe_inpkt);
+    if (my_q == NULL) {
       LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Failed to parse question, skipping probe packet\n"));
       goto cleanup;
     }
@@ -882,38 +1053,46 @@ mdns_handle_probe_tiebreaking(struct netif *netif, struct mdns_packet *pkt)
     match = 0;
     /* Search for a matching probe in the incomming packet */
     while (pkt->questions_left) {
+      struct mdns_question *pkt_q;
       /* Read probe questions one by one */
-      res = mdns_read_question(pkt, &pkt_q);
-      if (res != ERR_OK) {
+      pkt_q = mdns_read_question(pkt);
+      if (pkt_q == NULL) {
         LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Failed to parse question, skipping probe packet\n"));
         goto cleanup;
       }
       /* Stop evaluating if the class is not supported */
-      if (pkt_q.info.klass != DNS_RRCLASS_IN && pkt_q.info.klass != DNS_RRCLASS_ANY) {
+      if (pkt_q->info.klass != DNS_RRCLASS_IN && pkt_q->info.klass != DNS_RRCLASS_ANY) {
         LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: question class not supported, skipping probe packet\n"));
+        mdns_question_free(pkt_q);
         goto cleanup;
       }
       /* We probe for type any, so we do not have to compare types */
       /* Compare if we are probing for the same domain */
-      if (mdns_domain_eq(&pkt_q.info.domain, &my_q.info.domain)) {
+      if (mdns_domain_eq(pkt_q->info.domain, my_q->info.domain)) {
         LWIP_DEBUGF(MDNS_DEBUG, ("mDNS: We are probing for the same rr\n"));
         match = 1;
+        mdns_question_free(pkt_q);
         break;
       }
+      mdns_question_free(pkt_q);
     }
     /* When matched start evaluating the authoritative section */
     if (match) {
       /* Ignore all following questions to be able to get to the authoritative answers */
       while (pkt->questions_left) {
-        res = mdns_read_question(pkt, &q_dummy);
-        if (res != ERR_OK) {
+        struct mdns_question *q_dummy;
+        q_dummy = mdns_read_question(pkt);
+        mdns_question_free(q_dummy);
+        if (q_dummy == NULL) {
           LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Failed to parse question, skipping probe packet\n"));
           goto cleanup;
         }
       }
       while (myprobe_inpkt.questions_left) {
-        res = mdns_read_question(&myprobe_inpkt, &q_dummy);
-        if (res != ERR_OK) {
+        struct mdns_question *q_dummy;
+        q_dummy = mdns_read_question(&myprobe_inpkt);
+        mdns_question_free(q_dummy);
+        if (q_dummy == NULL) {
           LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Failed to parse question, skipping probe packet\n"));
           goto cleanup;
         }
@@ -922,38 +1101,44 @@ mdns_handle_probe_tiebreaking(struct netif *netif, struct mdns_packet *pkt)
       /* Extract and sort our authoritative answers that answer our question */
       mdns_init_answer_list(&my_a_list);
       while(myprobe_inpkt.authoritative_left) {
+        struct mdns_answer *my_a;
         save_parse_offset = myprobe_inpkt.parse_offset;
-        res = mdns_read_answer(&myprobe_inpkt, &my_a, &myprobe_inpkt.authoritative_left);
-        if (res != ERR_OK) {
+        my_a = mdns_read_answer(&myprobe_inpkt, &myprobe_inpkt.authoritative_left);
+        if (my_a == NULL) {
           LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Failed to parse answer, skipping probe packet\n"));
           goto cleanup;
         }
-        if (mdns_is_answer_to_question(&my_q, &my_a)) {
+        if (mdns_is_answer_to_question(my_q, my_a)) {
           /* Add to list */
-          res = mdns_push_answer_to_sorted_list(&my_a_list, &myprobe_inpkt, save_parse_offset, &my_a);
+          res = mdns_push_answer_to_sorted_list(&my_a_list, &myprobe_inpkt, save_parse_offset, my_a);
           if (res != ERR_OK) {
             LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Failed to add answer, skipping probe packet\n"));
+            mdns_answer_free(my_a);
             goto cleanup;
           }
         }
+        mdns_answer_free(my_a);
       }
       /* Extract and sort the packets authoritative answers that answer the
          question */
       mdns_init_answer_list(&pkt_a_list);
       while(pkt->authoritative_left) {
+        struct mdns_answer *pkt_a;
         save_parse_offset = pkt->parse_offset;
-        res = mdns_read_answer(pkt, &pkt_a, &pkt->authoritative_left);
-        if (res != ERR_OK) {
+        pkt_a = mdns_read_answer(pkt, &pkt->authoritative_left);
+        if (pkt_a == NULL) {
           LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Failed to parse answer, skipping probe packet\n"));
           goto cleanup;
         }
-        if (mdns_is_answer_to_question(&my_q, &pkt_a)) {
+        if (mdns_is_answer_to_question(my_q, pkt_a)) {
           /* Add to list */
-          res = mdns_push_answer_to_sorted_list(&pkt_a_list, pkt, save_parse_offset, &pkt_a);
+          res = mdns_push_answer_to_sorted_list(&pkt_a_list, pkt, save_parse_offset, pkt_a);
           if (res != ERR_OK) {
             LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Failed to add answer, skipping probe packet\n"));
+            mdns_answer_free(pkt_a);
             goto cleanup;
           }
+          mdns_answer_free(pkt_a);
         }
       }
 
@@ -968,25 +1153,29 @@ mdns_handle_probe_tiebreaking(struct netif *netif, struct mdns_packet *pkt)
        */
       min = LWIP_MIN(my_a_list.size, pkt_a_list.size);
       for (i = 0; i < min; i++) {
+        struct mdns_answer *my_a, *pkt_a;
         /* Get answer of our own list */
         myprobe_inpkt.parse_offset = my_a_list.offset[i];
-        res = mdns_read_answer(&myprobe_inpkt, &my_a, &myprobe_inpkt.authoritative_left);
-        if (res != ERR_OK) {
+        my_a = mdns_read_answer(&myprobe_inpkt, &myprobe_inpkt.authoritative_left);
+        if (my_a == NULL) {
           LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Failed to parse answer, skipping probe packet\n"));
           goto cleanup;
         }
         /* Get answer of the packets list  */
         pkt->parse_offset = pkt_a_list.offset[i];
-        res = mdns_read_answer(pkt, &pkt_a, &pkt->authoritative_left);
-        if (res != ERR_OK) {
+        pkt_a = mdns_read_answer(pkt, &pkt->authoritative_left);
+        if (pkt_a == NULL) {
           LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Failed to parse answer, skipping probe packet\n"));
+          mdns_answer_free(my_a);
           goto cleanup;
         }
         /* Print both answers for debugging */
-        mdns_debug_print_answer(pkt, &pkt_a);
-        mdns_debug_print_answer(&myprobe_inpkt, &my_a);
+        mdns_debug_print_answer(pkt, pkt_a);
+        mdns_debug_print_answer(&myprobe_inpkt, my_a);
         /* Define the winner */
-        res = mdns_lexicographical_comparison(&myprobe_inpkt, pkt, &my_a, &pkt_a, &result);
+        res = mdns_lexicographical_comparison(&myprobe_inpkt, pkt, my_a, pkt_a, &result);
+        mdns_answer_free(my_a);
+        mdns_answer_free(pkt_a);
         if (res != ERR_OK) {
           LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Failed to compare answers, skipping probe packet\n"));
           goto cleanup;
@@ -1030,6 +1219,8 @@ mdns_handle_probe_tiebreaking(struct netif *netif, struct mdns_packet *pkt)
         LWIP_DEBUGF(MDNS_DEBUG, ("mDNS: no conflict, all records answering the probe are equal\n"));
       }
     }
+    mdns_question_free(my_q);
+    my_q = NULL;
     /* Evaluate other probes if any. */
     /* Reinitiate parse offsets */
     pkt->parse_offset = pkt_parse_offset;
@@ -1042,6 +1233,9 @@ mdns_handle_probe_tiebreaking(struct netif *netif, struct mdns_packet *pkt)
   }
 
 cleanup:
+  if (my_q) {
+    mdns_question_free(my_q);
+  }
   if (myprobe_inpkt.pbuf != NULL) {
     pbuf_free(myprobe_inpkt.pbuf);
   }
@@ -1062,35 +1256,36 @@ mdns_parse_pkt_questions(struct netif *netif, struct mdns_packet *pkt,
   struct mdns_host *mdns = NETIF_TO_HOST(netif);
   struct mdns_service *service;
   int i;
-  err_t res;
 
   while (pkt->questions_left) {
-    struct mdns_question q;
+    struct mdns_question *q;
 
-    res = mdns_read_question(pkt, &q);
-    if (res != ERR_OK) {
+    q = mdns_read_question(pkt);
+    if (q == NULL) {
       LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Failed to parse question, skipping query packet\n"));
-      return res;
+      return ERR_MEM;
     }
 
     LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Query for domain "));
-    mdns_domain_debug_print(&q.info.domain);
-    LWIP_DEBUGF(MDNS_DEBUG, (" type %d class %d\n", q.info.type, q.info.klass));
+    mdns_domain_debug_print(q->info.domain);
+    LWIP_DEBUGF(MDNS_DEBUG, (" type %d class %d\n", q->info.type, q->info.klass));
 
-    if (q.unicast) {
+    if (q->unicast) {
       /* Reply unicast if it is requested in the question */
       reply->unicast_reply_requested = 1;
     }
 
-    reply->host_replies |= check_host(netif, &q.info, &reply->host_reverse_v6_replies);
+    reply->host_replies |= check_host(netif, &q->info, &reply->host_reverse_v6_replies);
 
     for (i = 0; i < MDNS_MAX_SERVICES; i++) {
       service = mdns->services[i];
       if (!service) {
         continue;
       }
-      reply->serv_replies[i] |= check_service(service, &q.info);
+      reply->serv_replies[i] |= check_service(service, &q->info);
     }
+
+    mdns_question_free(q);
   }
 
   return ERR_OK;
@@ -1111,73 +1306,79 @@ mdns_parse_pkt_known_answers(struct netif *netif, struct mdns_packet *pkt,
   struct mdns_host *mdns = NETIF_TO_HOST(netif);
   struct mdns_service *service;
   int i;
-  err_t res;
 
   while (pkt->answers_left) {
-    struct mdns_answer ans;
+    struct mdns_answer *ans;
     u8_t rev_v6;
     int match;
     u32_t rr_ttl = MDNS_TTL_120;
 
-    res = mdns_read_answer(pkt, &ans, &pkt->answers_left);
-    if (res != ERR_OK) {
+    ans = mdns_read_answer(pkt, &pkt->answers_left);
+    if (ans == NULL) {
       LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Failed to parse answer, skipping query packet\n"));
-      return res;
+      return ERR_VAL;
     }
 
     LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Known answer for domain "));
-    mdns_domain_debug_print(&ans.info.domain);
-    LWIP_DEBUGF(MDNS_DEBUG, (" type %d class %d\n", ans.info.type, ans.info.klass));
+    mdns_domain_debug_print(ans->info.domain);
+    LWIP_DEBUGF(MDNS_DEBUG, (" type %d class %d\n", ans->info.type, ans->info.klass));
 
 
-    if (ans.info.type == DNS_RRTYPE_ANY || ans.info.klass == DNS_RRCLASS_ANY) {
+    if (ans->info.type == DNS_RRTYPE_ANY || ans->info.klass == DNS_RRCLASS_ANY) {
       /* Skip known answers for ANY type & class */
+      mdns_answer_free(ans);
       continue;
     }
 
     rev_v6 = 0;
-    match = reply->host_replies & check_host(netif, &ans.info, &rev_v6);
-    if (match && (ans.ttl > (rr_ttl / 2))) {
+    match = reply->host_replies & check_host(netif, &ans->info, &rev_v6);
+    if (match && (ans->ttl > (rr_ttl / 2))) {
       /* The RR in the known answer matches an RR we are planning to send,
        * and the TTL is less than half gone.
        * If the payload matches we should not send that answer.
        */
-      if (ans.info.type == DNS_RRTYPE_PTR) {
+      if (ans->info.type == DNS_RRTYPE_PTR) {
         /* Read domain and compare */
-        struct mdns_domain known_ans, my_ans;
+        struct mdns_domain *known_ans, *my_ans;
         u16_t len;
-        len = mdns_readname(pkt->pbuf, ans.rd_offset, &known_ans);
-        res = mdns_build_host_domain(&my_ans, mdns);
-        if (len != MDNS_READNAME_ERROR && res == ERR_OK && mdns_domain_eq(&known_ans, &my_ans)) {
+        len = mdns_readname(pkt->pbuf, ans->rd_offset, &known_ans);
+        if (known_ans) {
+          my_ans = mdns_build_host_domain(mdns);
+          if (my_ans) {
+            if (len != MDNS_READNAME_ERROR && mdns_domain_eq(known_ans, my_ans)) {
 #if LWIP_IPV4
-          if (match & REPLY_HOST_PTR_V4) {
-            LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Skipping known answer: v4 PTR\n"));
-            reply->host_replies &= ~REPLY_HOST_PTR_V4;
-          }
+              if (match & REPLY_HOST_PTR_V4) {
+                LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Skipping known answer: v4 PTR\n"));
+                reply->host_replies &= ~REPLY_HOST_PTR_V4;
+              }
 #endif
 #if LWIP_IPV6
-          if (match & REPLY_HOST_PTR_V6) {
-            LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Skipping known answer: v6 PTR\n"));
-            reply->host_reverse_v6_replies &= ~rev_v6;
-            if (reply->host_reverse_v6_replies == 0) {
-              reply->host_replies &= ~REPLY_HOST_PTR_V6;
-            }
-          }
+              if (match & REPLY_HOST_PTR_V6) {
+                LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Skipping known answer: v6 PTR\n"));
+                reply->host_reverse_v6_replies &= ~rev_v6;
+                if (reply->host_reverse_v6_replies == 0) {
+                  reply->host_replies &= ~REPLY_HOST_PTR_V6;
+                }
+              }
 #endif
+            }
+            mdns_domain_free(my_ans);
+          }
+          mdns_domain_free(known_ans);
         }
       } else if (match & REPLY_HOST_A) {
 #if LWIP_IPV4
-        if (ans.rd_length == sizeof(ip4_addr_t) &&
-            pbuf_memcmp(pkt->pbuf, ans.rd_offset, netif_ip4_addr(netif), ans.rd_length) == 0) {
+        if (ans->rd_length == sizeof(ip4_addr_t) &&
+            pbuf_memcmp(pkt->pbuf, ans->rd_offset, netif_ip4_addr(netif), ans->rd_length) == 0) {
           LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Skipping known answer: A\n"));
           reply->host_replies &= ~REPLY_HOST_A;
         }
 #endif
       } else if (match & REPLY_HOST_AAAA) {
 #if LWIP_IPV6
-        if (ans.rd_length == sizeof(ip6_addr_p_t) &&
+        if (ans->rd_length == sizeof(ip6_addr_p_t) &&
             /* TODO this clears all AAAA responses if first addr is set as known */
-            pbuf_memcmp(pkt->pbuf, ans.rd_offset, netif_ip6_addr(netif, 0), ans.rd_length) == 0) {
+            pbuf_memcmp(pkt->pbuf, ans->rd_offset, netif_ip6_addr(netif, 0), ans->rd_length) == 0) {
           LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Skipping known answer: AAAA\n"));
           reply->host_replies &= ~REPLY_HOST_AAAA;
         }
@@ -1190,41 +1391,50 @@ mdns_parse_pkt_known_answers(struct netif *netif, struct mdns_packet *pkt,
       if (!service) {
         continue;
       }
-      match = reply->serv_replies[i] & check_service(service, &ans.info);
+      match = reply->serv_replies[i] & check_service(service, &ans->info);
       if (match & REPLY_SERVICE_TYPE_PTR) {
         rr_ttl = MDNS_TTL_4500;
       }
-      if (match && (ans.ttl > (rr_ttl / 2))) {
+      if (match && (ans->ttl > (rr_ttl / 2))) {
         /* The RR in the known answer matches an RR we are planning to send,
          * and the TTL is less than half gone.
          * If the payload matches we should not send that answer.
          */
-        if (ans.info.type == DNS_RRTYPE_PTR) {
+        if (ans->info.type == DNS_RRTYPE_PTR) {
           /* Read domain and compare */
-          struct mdns_domain known_ans, my_ans;
+          struct mdns_domain *known_ans;
           u16_t len;
-          len = mdns_readname(pkt->pbuf, ans.rd_offset, &known_ans);
-          if (len != MDNS_READNAME_ERROR) {
-            if (match & REPLY_SERVICE_TYPE_PTR) {
-              res = mdns_build_service_domain(&my_ans, service, 0);
-              if (res == ERR_OK && mdns_domain_eq(&known_ans, &my_ans)) {
-                LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Skipping known answer: service type PTR\n"));
-                reply->serv_replies[i] &= ~REPLY_SERVICE_TYPE_PTR;
+          len = mdns_readname(pkt->pbuf, ans->rd_offset, &known_ans);
+          if (known_ans) {
+            if (len != MDNS_READNAME_ERROR) {
+              if (match & REPLY_SERVICE_TYPE_PTR) {
+                struct mdns_domain *my_ans;
+                my_ans = mdns_build_service_domain(service, 0);
+                if (my_ans) {
+                  if (mdns_domain_eq(known_ans, my_ans)) {
+                    LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Skipping known answer: service type PTR\n"));
+                    reply->serv_replies[i] &= ~REPLY_SERVICE_TYPE_PTR;
+                  }
+                  mdns_domain_free(my_ans);
+                }
+              }
+              if (match & REPLY_SERVICE_NAME_PTR) {
+                struct mdns_domain *my_ans;
+                my_ans = mdns_build_service_domain(service, 1);
+                if (mdns_domain_eq(known_ans, my_ans)) {
+                  LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Skipping known answer: service name PTR\n"));
+                  reply->serv_replies[i] &= ~REPLY_SERVICE_NAME_PTR;
+                }
+                mdns_domain_free(my_ans);
               }
             }
-            if (match & REPLY_SERVICE_NAME_PTR) {
-              res = mdns_build_service_domain(&my_ans, service, 1);
-              if (res == ERR_OK && mdns_domain_eq(&known_ans, &my_ans)) {
-                LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Skipping known answer: service name PTR\n"));
-                reply->serv_replies[i] &= ~REPLY_SERVICE_NAME_PTR;
-              }
-            }
+            mdns_domain_free(known_ans);
           }
         } else if (match & REPLY_SERVICE_SRV) {
           /* Read and compare to my SRV record */
           u16_t field16, len, read_pos;
-          struct mdns_domain known_ans, my_ans;
-          read_pos = ans.rd_offset;
+          struct mdns_domain *known_ans, *my_ans;
+          read_pos = ans->rd_offset;
           do {
             /* Check priority field */
             len = pbuf_copy_partial(pkt->pbuf, &field16, sizeof(field16), read_pos);
@@ -1246,23 +1456,38 @@ mdns_parse_pkt_known_answers(struct netif *netif, struct mdns_packet *pkt,
             read_pos += len;
             /* Check host field */
             len = mdns_readname(pkt->pbuf, read_pos, &known_ans);
-            mdns_build_host_domain(&my_ans, mdns);
-            if (len == MDNS_READNAME_ERROR || !mdns_domain_eq(&known_ans, &my_ans)) {
-              break;
+            if (known_ans) {
+              my_ans = mdns_build_host_domain(mdns);
+              if (my_ans) {
+                if (len == MDNS_READNAME_ERROR || !mdns_domain_eq(known_ans, my_ans)) {
+                  mdns_domain_free(my_ans);
+                  mdns_domain_free(known_ans);
+                  break;
+                }
+                mdns_domain_free(my_ans);
+              }
+              LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Skipping known answer: SRV\n"));
+              reply->serv_replies[i] &= ~REPLY_SERVICE_SRV;
+              mdns_domain_free(known_ans);
             }
-            LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Skipping known answer: SRV\n"));
-            reply->serv_replies[i] &= ~REPLY_SERVICE_SRV;
           } while (0);
         } else if (match & REPLY_SERVICE_TXT) {
           mdns_prepare_txtdata(service);
-          if (service->txtdata.length == ans.rd_length &&
-              pbuf_memcmp(pkt->pbuf, ans.rd_offset, service->txtdata.name, ans.rd_length) == 0) {
-            LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Skipping known answer: TXT\n"));
+          if (service->txtdata) {
+            if (service->txtdata->length == ans->rd_length &&
+                pbuf_memcmp(pkt->pbuf, ans->rd_offset, service->txtdata->name, ans->rd_length) == 0) {
+              LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Skipping known answer: TXT\n"));
+              reply->serv_replies[i] &= ~REPLY_SERVICE_TXT;
+            }
+            mdns_domain_free(service->txtdata);
+            service->txtdata = NULL;
+          } else {
             reply->serv_replies[i] &= ~REPLY_SERVICE_TXT;
           }
         }
       }
     }
+    mdns_answer_free(ans);
   }
 
   return ERR_OK;
@@ -1284,31 +1509,31 @@ mdns_parse_pkt_authoritative_answers(struct netif *netif, struct mdns_packet *pk
   struct mdns_host *mdns = NETIF_TO_HOST(netif);
   struct mdns_service *service;
   int i;
-  err_t res;
 
   while (pkt->authoritative_left) {
-    struct mdns_answer ans;
+    struct mdns_answer *ans;
     u8_t rev_v6;
     int match;
 
-    res = mdns_read_answer(pkt, &ans, &pkt->authoritative_left);
-    if (res != ERR_OK) {
+    ans = mdns_read_answer(pkt, &pkt->authoritative_left);
+    if (ans == NULL) {
       LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Failed to parse answer, skipping query packet\n"));
-      return res;
+      return ERR_VAL;
     }
 
     LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Authoritative answer for domain "));
-    mdns_domain_debug_print(&ans.info.domain);
-    LWIP_DEBUGF(MDNS_DEBUG, (" type %d class %d\n", ans.info.type, ans.info.klass));
+    mdns_domain_debug_print(ans->info.domain);
+    LWIP_DEBUGF(MDNS_DEBUG, (" type %d class %d\n", ans->info.type, ans->info.klass));
 
 
-    if (ans.info.type == DNS_RRTYPE_ANY || ans.info.klass == DNS_RRCLASS_ANY) {
+    if (ans->info.type == DNS_RRTYPE_ANY || ans->info.klass == DNS_RRCLASS_ANY) {
       /* Skip known answers for ANY type & class */
+      mdns_answer_free(ans);
       continue;
     }
 
     rev_v6 = 0;
-    match = reply->host_replies & check_host(netif, &ans.info, &rev_v6);
+    match = reply->host_replies & check_host(netif, &ans->info, &rev_v6);
     if (match) {
       reply->probe_query_recv = 1;
       LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Probe for own host info received\n"));
@@ -1319,13 +1544,14 @@ mdns_parse_pkt_authoritative_answers(struct netif *netif, struct mdns_packet *pk
       if (!service) {
         continue;
       }
-      match = reply->serv_replies[i] & check_service(service, &ans.info);
+      match = reply->serv_replies[i] & check_service(service, &ans->info);
 
       if (match) {
         reply->probe_query_recv = 1;
         LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Probe for own service info received\n"));
       }
     }
+    mdns_answer_free(ans);
   }
 
   return ERR_OK;
@@ -1722,9 +1948,9 @@ mdns_lookup_request(struct mdns_rr_info *rr)
   int i;
   /* search originating request */
   for (i = 0; i < MDNS_MAX_REQUESTS; i++) {
-    if ((mdns_requests[i].result_fn != NULL) &&
-        (check_request(&mdns_requests[i], rr) != 0)) {
-      return &mdns_requests[i];
+    if ((mdns_requests[i] != NULL) &&
+        (check_request(mdns_requests[i], rr) != 0)) {
+      return mdns_requests[i];
     }
   }
   return NULL;
@@ -1757,49 +1983,47 @@ mdns_handle_response(struct mdns_packet *pkt, struct netif *netif)
 
   /* Ignore all questions */
   while (pkt->questions_left) {
-    struct mdns_question q;
-    err_t res;
-    res = mdns_read_question(pkt, &q);
-    if (res != ERR_OK) {
+    struct mdns_question *q;
+    q = mdns_read_question(pkt);
+    if (q == NULL) {
       LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Failed to parse question, skipping response packet\n"));
       return;
     }
 #if LWIP_MDNS_SEARCH
-    else {
-      req = mdns_lookup_request(&q.info);
-    }
+    req = mdns_lookup_request(&q->info);
 #endif
+    mdns_question_free(q);
   }
   /* We need to check all resource record sections: answers, authoritative and additional */
   total_answers_left = pkt->answers_left + pkt->authoritative_left + pkt->additional_left;
   while (total_answers_left) {
-    struct mdns_answer ans;
-    err_t res;
+    struct mdns_answer *ans;
 
-    res = mdns_read_answer(pkt, &ans, &total_answers_left);
-    if (res != ERR_OK) {
+    ans = mdns_read_answer(pkt, &total_answers_left);
+    if (ans == NULL) {
       LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Failed to parse answer, skipping response packet\n"));
       return;
     }
 
     LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Answer for domain "));
-    mdns_domain_debug_print(&ans.info.domain);
-    LWIP_DEBUGF(MDNS_DEBUG, (" type %d class %d\n", ans.info.type, ans.info.klass));
+    mdns_domain_debug_print(ans->info.domain);
+    LWIP_DEBUGF(MDNS_DEBUG, (" type %d class %d\n", ans->info.type, ans->info.klass));
 
-    if (ans.info.type == DNS_RRTYPE_ANY || ans.info.klass != DNS_RRCLASS_IN) {
+    if (ans->info.type == DNS_RRTYPE_ANY || ans->info.klass != DNS_RRCLASS_IN) {
       /* Skip answers for ANY type or if class != IN */
+      mdns_answer_free(ans);
       continue;
     }
 
 #if LWIP_MDNS_SEARCH
     if (req && req->only_ptr) {
       /* Need to recheck that this answer match request that match previous answer */
-      if (memcmp (req->service.name, ans.info.domain.name, req->service.length) != 0)
+      if (memcmp (req->service->name, ans->info.domain->name, req->service->length) != 0)
         req = NULL;
     }
     if (!req) {
       /* Try hard to search matching request */
-      req = mdns_lookup_request(&ans.info);
+      req = mdns_lookup_request(&ans->info);
     }
     if (req && req->result_fn) {
       u16_t offset;
@@ -1807,38 +2031,45 @@ mdns_handle_response(struct mdns_packet *pkt, struct netif *netif)
       int flags = (first ? MDNS_SEARCH_RESULT_FIRST : 0) |
           (!total_answers_left ? MDNS_SEARCH_RESULT_LAST : 0);
       if (req->only_ptr) {
-          if (ans.info.type != DNS_RRTYPE_PTR)
-              continue; /* Ignore non matching answer type */
-          flags = MDNS_SEARCH_RESULT_FIRST | MDNS_SEARCH_RESULT_LAST;
+        if (ans->info.type != DNS_RRTYPE_PTR) {
+          /* Ignore non matching answer type */
+          mdns_answer_free(ans);
+          continue;
+        }
+        flags = MDNS_SEARCH_RESULT_FIRST | MDNS_SEARCH_RESULT_LAST;
       }
-      p = pbuf_skip(pkt->pbuf, ans.rd_offset, &offset);
-      if (ans.info.type == DNS_RRTYPE_PTR || ans.info.type == DNS_RRTYPE_SRV) {
+      p = pbuf_skip(pkt->pbuf, ans->rd_offset, &offset);
+      if (ans->info.type == DNS_RRTYPE_PTR || ans->info.type == DNS_RRTYPE_SRV) {
         /* Those RR types have compressed domain name. Must uncompress here,
            since cannot be done without pbuf. */
-        struct {
-          u16_t values[3];        /* SRV: Prio, Weight, Port */
-          struct mdns_domain dom; /* PTR & SRV: Domain (uncompressed) */
-        } data;
-        u16_t off = (ans.info.type == DNS_RRTYPE_SRV ? 6 : 0);
-        u16_t len = mdns_readname(pkt->pbuf, ans.rd_offset + off, &data.dom);
+        struct mdns_domain *dom; /* PTR & SRV: Domain (uncompressed) */
+        u16_t off = (ans->info.type == DNS_RRTYPE_SRV ? 6 : 0);
+        u16_t len = mdns_readname(pkt->pbuf, ans->rd_offset + off, &dom);
         if (len == MDNS_READNAME_ERROR) {
+          u16_t length = ans->rd_length - off;
           /* Ensure result_fn is called anyway, just copy failed domain as is */
-          data.dom.length = ans.rd_length - off;
-          memcpy(&data.dom, (const char *)p->payload + offset + off, data.dom.length);
+          mdns_domain_ensure_name(dom, length);
+          memcpy(dom->name, (const char *)p->payload + offset + off, length);
+          dom->length = length;
         }
         /* Adjust len/off according RR type */
-        if (ans.info.type == DNS_RRTYPE_SRV) {
-          memcpy(&data, (const char *)p->payload + offset, 6);
-          len = data.dom.length + 6;
-          off = 0;
+        if (ans->info.type == DNS_RRTYPE_SRV) {
+          u8_t *data;
+          /* SRV: Prio, Weight, Port */
+          data = (u8_t *) mem_malloc(dom->length + 6);
+          if (data) {
+              memcpy(data, (const char *)p->payload + offset, 6);
+              memcpy(data + 6, dom->name, dom->length);
+              req->result_fn(ans, (const char *)data, dom->length + 6, flags, req->arg);
+              mem_free(data);
+          }
         } else {
-          len = data.dom.length;
-          off = 6;
+          req->result_fn(ans, (const char *)dom->name, dom->length, flags, req->arg);
         }
-        req->result_fn(&ans, (const char *)&data + off, len, flags, req->arg);
+        mdns_domain_free(dom);
       } else {
         /* Direct call result_fn with varpart pointing in pbuf payload */
-        req->result_fn(&ans, (const char *)p->payload + offset, ans.rd_length, flags, req->arg);
+        req->result_fn(ans, (const char *)p->payload + offset, ans->rd_length, flags, req->arg);
       }
       first = 0;
     }
@@ -1849,25 +2080,32 @@ mdns_handle_response(struct mdns_packet *pkt, struct netif *netif)
      * started probing yet. */
     if ((mdns->state == MDNS_STATE_PROBING) ||
         (mdns->state == MDNS_STATE_ANNOUNCE_WAIT)) {
-      struct mdns_domain domain;
+      struct mdns_domain *host_domain;
       u8_t i;
       u8_t conflict = 0;
 
-      res = mdns_build_host_domain(&domain, mdns);
-      if (res == ERR_OK && mdns_domain_eq(&ans.info.domain, &domain)) {
-        LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Probe response matches host domain!"));
-        conflict = 1;
+      host_domain = mdns_build_host_domain(mdns);
+      if (host_domain) {
+        if (mdns_domain_eq(ans->info.domain, host_domain)) {
+          LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Probe response matches host domain!"));
+          conflict = 1;
+        }
+        mdns_domain_free(host_domain);
       }
 
       for (i = 0; i < MDNS_MAX_SERVICES; i++) {
         struct mdns_service* service = mdns->services[i];
+        struct mdns_domain *domain;
         if (!service) {
           continue;
         }
-        res = mdns_build_service_domain(&domain, service, 1);
-        if ((res == ERR_OK) && mdns_domain_eq(&ans.info.domain, &domain)) {
-          LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Probe response matches service domain!"));
-          conflict = 1;
+        domain = mdns_build_service_domain(service, 1);
+        if (domain) {
+          if (mdns_domain_eq(ans->info.domain, domain)) {
+            LWIP_DEBUGF(MDNS_DEBUG, ("MDNS: Probe response matches service domain!"));
+            conflict = 1;
+          }
+          mdns_domain_free(domain);
         }
       }
 
@@ -1886,32 +2124,40 @@ mdns_handle_response(struct mdns_packet *pkt, struct netif *netif)
      */
     else if ((mdns->state == MDNS_STATE_ANNOUNCING) ||
              (mdns->state == MDNS_STATE_COMPLETE)) {
-      struct mdns_domain domain;
+      struct mdns_domain *host_domain;
       u8_t i;
       u8_t conflict = 0;
+      u8_t host_match = 0;
 
       /* Evaluate unique hostname records -> A and AAAA */
-      res = mdns_build_host_domain(&domain, mdns);
-      if (res == ERR_OK && mdns_domain_eq(&ans.info.domain, &domain)) {
+      host_domain = mdns_build_host_domain(mdns);
+      if (host_domain) {
+        if (mdns_domain_eq(ans->info.domain, host_domain)) {
+          host_match = 1;
+        }
+        mdns_domain_free(host_domain);
+      }
+
+      if (host_match) {
         LWIP_DEBUGF(MDNS_DEBUG, ("mDNS: response matches host domain, assuming conflict\n"));
         /* This means a conflict has taken place, except when the packet contains
          * exactly the same rdata. */
         conflict = 1;
         /* Evaluate rdata -> to see if it's a copy of our own data */
-        if (ans.info.type == DNS_RRTYPE_A) {
+        if (ans->info.type == DNS_RRTYPE_A) {
 #if LWIP_IPV4
-          if (ans.rd_length == sizeof(ip4_addr_t) &&
-              pbuf_memcmp(pkt->pbuf, ans.rd_offset, netif_ip4_addr(netif), ans.rd_length) == 0) {
+          if (ans->rd_length == sizeof(ip4_addr_t) &&
+              pbuf_memcmp(pkt->pbuf, ans->rd_offset, netif_ip4_addr(netif), ans->rd_length) == 0) {
             LWIP_DEBUGF(MDNS_DEBUG, ("mDNS: response equals our own IPv4 address record -> no conflict\n"));
             conflict = 0;
           }
 #endif
         }
-        else if (ans.info.type == DNS_RRTYPE_AAAA) {
+        else if (ans->info.type == DNS_RRTYPE_AAAA) {
 #if LWIP_IPV6
-          if (ans.rd_length == sizeof(ip6_addr_p_t)) {
+          if (ans->rd_length == sizeof(ip6_addr_p_t)) {
             for (i = 0; i < LWIP_IPV6_NUM_ADDRESSES; i++) {
-              if (pbuf_memcmp(pkt->pbuf, ans.rd_offset, netif_ip6_addr(netif, i), ans.rd_length) == 0) {
+              if (pbuf_memcmp(pkt->pbuf, ans->rd_offset, netif_ip6_addr(netif, i), ans->rd_length) == 0) {
                 LWIP_DEBUGF(MDNS_DEBUG, ("mDNS: response equals our own iPv6 address record, num = %d -> no conflict\n",i));
                 conflict = 0;
               }
@@ -1923,22 +2169,32 @@ mdns_handle_response(struct mdns_packet *pkt, struct netif *netif)
       /* Evaluate unique service name records -> SRV and TXT */
       for (i = 0; i < MDNS_MAX_SERVICES; i++) {
         struct mdns_service* service = mdns->services[i];
+        struct mdns_domain *domain;
+        u8_t service_match = 0;
         if (!service) {
           continue;
         }
-        res = mdns_build_service_domain(&domain, service, 1);
-        if ((res == ERR_OK) && mdns_domain_eq(&ans.info.domain, &domain)) {
+
+        domain = mdns_build_service_domain(service, 1);
+        if (domain) {
+          if (mdns_domain_eq(ans->info.domain, domain)) {
+            service_match = 1;
+          }
+          mdns_domain_free(domain);
+        }
+        if (service_match) {
           LWIP_DEBUGF(MDNS_DEBUG, ("mDNS: response matches service domain, assuming conflict\n"));
           /* This means a conflict has taken place, except when the packet contains
            * exactly the same rdata. */
           conflict = 1;
           /* Evaluate rdata -> to see if it's a copy of our own data */
-          if (ans.info.type == DNS_RRTYPE_SRV) {
+          if (ans->info.type == DNS_RRTYPE_SRV) {
             /* Read and compare to with our SRV record */
             u16_t field16, len, read_pos;
-            struct mdns_domain srv_ans, my_ans;
-            read_pos = ans.rd_offset;
+            struct mdns_domain *srv_ans, *my_ans;
+            read_pos = ans->rd_offset;
             do {
+              u8_t domains_eq = 0;
               /* Check priority field */
               len = pbuf_copy_partial(pkt->pbuf, &field16, sizeof(field16), read_pos);
               if (len != sizeof(field16) || lwip_ntohs(field16) != SRV_PRIORITY) {
@@ -1959,19 +2215,36 @@ mdns_handle_response(struct mdns_packet *pkt, struct netif *netif)
               read_pos += len;
               /* Check host field */
               len = mdns_readname(pkt->pbuf, read_pos, &srv_ans);
-              mdns_build_host_domain(&my_ans, mdns);
-              if (len == MDNS_READNAME_ERROR || !mdns_domain_eq(&srv_ans, &my_ans)) {
+              if (len == MDNS_READNAME_ERROR) {
+                mdns_domain_free(srv_ans);
+                break;
+              }
+              my_ans = mdns_build_host_domain(mdns);
+              if (my_ans == NULL) {
+                mdns_domain_free(srv_ans);
+                break;
+              }
+              if (mdns_domain_eq(srv_ans, my_ans)) {
+                domains_eq = 1;
+              }
+              mdns_domain_free(srv_ans);
+              mdns_domain_free(my_ans);
+              if (!domains_eq) {
                 break;
               }
               LWIP_DEBUGF(MDNS_DEBUG, ("mDNS: response equals our own SRV record -> no conflict\n"));
               conflict = 0;
             } while (0);
-          } else if (ans.info.type == DNS_RRTYPE_TXT) {
+          } else if (ans->info.type == DNS_RRTYPE_TXT) {
             mdns_prepare_txtdata(service);
-            if (service->txtdata.length == ans.rd_length &&
-                pbuf_memcmp(pkt->pbuf, ans.rd_offset, service->txtdata.name, ans.rd_length) == 0) {
-              LWIP_DEBUGF(MDNS_DEBUG, ("mDNS: response equals our own TXT record -> no conflict\n"));
-              conflict = 0;
+            if (service->txtdata) {
+              if (service->txtdata->length == ans->rd_length &&
+                pbuf_memcmp(pkt->pbuf, ans->rd_offset, service->txtdata->name, ans->rd_length) == 0) {
+                LWIP_DEBUGF(MDNS_DEBUG, ("mDNS: response equals our own TXT record -> no conflict\n"));
+                conflict = 0;
+              }
+              mdns_domain_free(service->txtdata);
+              service->txtdata = NULL;
             }
           }
         }
@@ -1985,12 +2258,14 @@ mdns_handle_response(struct mdns_packet *pkt, struct netif *netif)
         break;
       }
     }
+    mdns_answer_free(ans);
   }
   /* Clear all xxx_left variables because we parsed all answers */
   pkt->answers_left = 0;
   pkt->authoritative_left = 0;
   pkt->additional_left = 0;
 }
+
 
 /**
  * Receive input function for MDNS packets.
@@ -1999,8 +2274,8 @@ mdns_handle_response(struct mdns_packet *pkt, struct netif *netif)
 static void
 mdns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr, u16_t port)
 {
-  struct dns_hdr hdr;
-  struct mdns_packet packet;
+  struct dns_hdr *hdr = NULL;
+  struct mdns_packet *packet = NULL;
   struct netif *recv_netif = ip_current_input_netif();
   u16_t offset = 0;
 
@@ -2014,27 +2289,35 @@ mdns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr,
     goto dealloc;
   }
 
-  if (pbuf_copy_partial(p, &hdr, SIZEOF_DNS_HDR, offset) < SIZEOF_DNS_HDR) {
+  hdr = (struct dns_hdr *)mem_calloc(1, sizeof(struct dns_hdr));
+  if (hdr == NULL) {
+    goto dealloc;
+  }
+
+  if (pbuf_copy_partial(p, hdr, SIZEOF_DNS_HDR, offset) < SIZEOF_DNS_HDR) {
     /* Too small */
     goto dealloc;
   }
   offset += SIZEOF_DNS_HDR;
 
-  if (DNS_HDR_GET_OPCODE(&hdr)) {
+  if (DNS_HDR_GET_OPCODE(hdr)) {
     /* Ignore non-standard queries in multicast packets (RFC 6762, section 18.3) */
     goto dealloc;
   }
 
-  memset(&packet, 0, sizeof(packet));
-  SMEMCPY(&packet.source_addr, addr, sizeof(packet.source_addr));
-  packet.source_port = port;
-  packet.pbuf = p;
-  packet.parse_offset = offset;
-  packet.tx_id = lwip_ntohs(hdr.id);
-  packet.questions = packet.questions_left = lwip_ntohs(hdr.numquestions);
-  packet.answers = packet.answers_left = lwip_ntohs(hdr.numanswers);
-  packet.authoritative = packet.authoritative_left = lwip_ntohs(hdr.numauthrr);
-  packet.additional = packet.additional_left = lwip_ntohs(hdr.numextrarr);
+  packet = (struct mdns_packet *)mem_calloc(1, sizeof(struct mdns_packet));
+  if (packet == NULL) {
+    goto dealloc;
+  }
+  ip_addr_copy(packet->source_addr, *addr);
+  packet->source_port = port;
+  packet->pbuf = p;
+  packet->parse_offset = offset;
+  packet->tx_id = lwip_ntohs(hdr->id);
+  packet->questions = packet->questions_left = lwip_ntohs(hdr->numquestions);
+  packet->answers = packet->answers_left = lwip_ntohs(hdr->numanswers);
+  packet->authoritative = packet->authoritative_left = lwip_ntohs(hdr->numauthrr);
+  packet->additional = packet->additional_left = lwip_ntohs(hdr->numextrarr);
 
   /*  Source address check (RFC6762 section 11) -> for responses.
    *  Source address check (RFC6762 section 5.5) -> for queries.
@@ -2046,7 +2329,7 @@ mdns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr,
   if (IP_IS_V6(ip_current_dest_addr())) {
     /* instead of having one 'v6group' per netif, just compare zoneless here */
     if (!ip_addr_cmp_zoneless(ip_current_dest_addr(), &v6group)) {
-      packet.recv_unicast = 1;
+      packet->recv_unicast = 1;
 
       if (ip6_addr_ismulticast_global(ip_2_ip6(ip_current_src_addr()))
           || ip6_addr_isglobal(ip_2_ip6(ip_current_src_addr()))) {
@@ -2058,7 +2341,7 @@ mdns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr,
 #if LWIP_IPV4
   if (!IP_IS_V6(ip_current_dest_addr())) {
     if (!ip_addr_cmp(ip_current_dest_addr(), &v4group)) {
-      packet.recv_unicast = 1;
+      packet->recv_unicast = 1;
 
       if (!ip4_addr_netcmp(ip_2_ip4(ip_current_src_addr()),
                           netif_ip4_addr(recv_netif),
@@ -2069,13 +2352,19 @@ mdns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr,
   }
 #endif
 
-  if (hdr.flags1 & DNS_FLAG1_RESPONSE) {
-    mdns_handle_response(&packet, recv_netif);
+  if (hdr->flags1 & DNS_FLAG1_RESPONSE) {
+    mdns_handle_response(packet, recv_netif);
   } else {
-    mdns_handle_question(&packet, recv_netif);
+    mdns_handle_question(packet, recv_netif);
   }
 
 dealloc:
+  if (hdr) {
+    mem_free(hdr);
+  }
+  if (packet) {
+    mem_free(packet);
+  }
   pbuf_free(p);
 }
 
@@ -2173,7 +2462,6 @@ mdns_probe_and_announce(void* arg)
   struct mdns_host* mdns = NETIF_TO_HOST(netif);
   u32_t announce_delay;
 
-
   switch (mdns->state) {
     case MDNS_STATE_OFF:
     case MDNS_STATE_PROBE_WAIT:
@@ -2259,7 +2547,11 @@ mdns_resp_add_netif(struct netif *netif, const char *hostname)
 
   netif_set_client_data(netif, mdns_netif_client_id, mdns);
 
-  MEMCPY(&mdns->name, hostname, LWIP_MIN(MDNS_LABEL_MAXLEN, strlen(hostname)));
+  mdns->name = STRNDUP(hostname, MDNS_LABEL_MAXLEN);
+  if (mdns->name == NULL) {
+    res = ERR_MEM;
+    goto cleanup;
+  }
 
   /* Init delayed message structs with address and port */
 #if LWIP_IPV4
@@ -2293,7 +2585,7 @@ mdns_resp_add_netif(struct netif *netif, const char *hostname)
   return ERR_OK;
 
 cleanup:
-  mem_free(mdns);
+  mdns_host_free(mdns);
   netif_set_client_data(netif, mdns_netif_client_id, NULL);
   return res;
 }
@@ -2308,7 +2600,6 @@ cleanup:
 err_t
 mdns_resp_remove_netif(struct netif *netif)
 {
-  int i;
   struct mdns_host *mdns;
 
   LWIP_ASSERT_CORE_LOCKED();
@@ -2318,13 +2609,6 @@ mdns_resp_remove_netif(struct netif *netif)
 
   sys_untimeout(mdns_probe_and_announce, netif);
 
-  for (i = 0; i < MDNS_MAX_SERVICES; i++) {
-    struct mdns_service *service = mdns->services[i];
-    if (service) {
-      mem_free(service);
-    }
-  }
-
   /* Leave multicast groups */
 #if LWIP_IPV4
   igmp_leavegroup_netif(netif, ip_2_ip4(&v4group));
@@ -2333,7 +2617,7 @@ mdns_resp_remove_netif(struct netif *netif)
   mld6_leavegroup_netif(netif, ip_2_ip6(&v6group));
 #endif
 
-  mem_free(mdns);
+  mdns_host_free(mdns);
   netif_set_client_data(netif, mdns_netif_client_id, NULL);
   return ERR_OK;
 }
@@ -2360,8 +2644,13 @@ mdns_resp_rename_netif(struct netif *netif, const char *hostname)
   mdns = NETIF_TO_HOST(netif);
   LWIP_ERROR("mdns_resp_rename_netif: Not an mdns netif", (mdns != NULL), return ERR_VAL);
 
-  MEMCPY(&mdns->name, hostname, LWIP_MIN(MDNS_LABEL_MAXLEN, len));
-  mdns->name[len] = '\0'; /* null termination in case new name is shorter than previous */
+  if (mdns->name) {
+    mem_free(mdns->name);
+  }
+  mdns->name = STRNDUP(hostname, MDNS_LABEL_MAXLEN);
+  if (mdns->name == NULL) {
+    return ERR_MEM;
+  }
 
   mdns_resp_restart(netif);
 
@@ -2407,11 +2696,22 @@ mdns_resp_add_service(struct netif *netif, const char *name, const char *service
   }
   LWIP_ERROR("mdns_resp_add_service: Service list full (increase MDNS_MAX_SERVICES)", (slot < MDNS_MAX_SERVICES), return ERR_MEM);
 
-  srv = (struct mdns_service *)mem_calloc(1, sizeof(struct mdns_service));
+  srv = mdns_service_alloc();
   LWIP_ERROR("mdns_resp_add_service: Alloc failed", (srv != NULL), return ERR_MEM);
 
-  MEMCPY(&srv->name, name, LWIP_MIN(MDNS_LABEL_MAXLEN, strlen(name)));
-  MEMCPY(&srv->service, service, LWIP_MIN(MDNS_LABEL_MAXLEN, strlen(service)));
+  srv->name = STRNDUP(name, MDNS_LABEL_MAXLEN);
+  if (srv->name == NULL) {
+    mem_free(srv);
+    return ERR_MEM;
+  }
+  srv->service = STRNDUP(service, MDNS_LABEL_MAXLEN);
+  if (srv->service == NULL) {
+    mem_free(srv->name);
+    mem_free(srv);
+    return ERR_MEM;
+  }
+
+  srv->txtdata = NULL;
   srv->txt_fn = txt_fn;
   srv->txt_userdata = txt_data;
   srv->proto = (u16_t)proto;
@@ -2444,7 +2744,7 @@ mdns_resp_del_service(struct netif *netif, s8_t slot)
 
   srv = mdns->services[slot];
   mdns->services[slot] = NULL;
-  mem_free(srv);
+  mdns_service_free(srv);
   return ERR_OK;
 }
 
@@ -2474,8 +2774,13 @@ mdns_resp_rename_service(struct netif *netif, s8_t slot, const char *name)
 
   srv = mdns->services[slot];
 
-  MEMCPY(&srv->name, name, LWIP_MIN(MDNS_LABEL_MAXLEN, len));
-  srv->name[len] = '\0'; /* null termination in case new name is shorter than previous */
+  if (srv->name) {
+    mem_free(srv->name);
+  }
+  srv->name = STRNDUP(name, MDNS_LABEL_MAXLEN);
+  if (srv->name == NULL) {
+    return ERR_MEM;
+  }
 
   mdns_resp_restart(netif);
 
@@ -2494,11 +2799,21 @@ mdns_resp_rename_service(struct netif *netif, s8_t slot, const char *name)
 err_t
 mdns_resp_add_service_txtitem(struct mdns_service *service, const char *txt, u8_t txt_len)
 {
+  struct mdns_domain *txtdata;
+
   LWIP_ASSERT_CORE_LOCKED();
   LWIP_ASSERT("mdns_resp_add_service_txtitem: service != NULL", service);
 
   /* Use a mdns_domain struct to store txt chunks since it is the same encoding */
-  return mdns_domain_add_label(&service->txtdata, txt, txt_len);
+  txtdata = service->txtdata;
+  if (txtdata == NULL) {
+    txtdata = mdns_domain_alloc();
+    service->txtdata = txtdata;
+  }
+  if (txtdata == NULL) {
+    return ERR_MEM;
+  }
+  return mdns_domain_add_label(txtdata, txt, txt_len);
 }
 
 #if LWIP_MDNS_SEARCH
@@ -2512,15 +2827,17 @@ mdns_search_stop(s8_t request_id)
 {
   struct mdns_request *req;
   LWIP_ASSERT("mdns_search_stop: bad request_id", (request_id >= 0) && (request_id < MDNS_MAX_REQUESTS));
-  req = &mdns_requests[request_id];
-  if (req && req->result_fn) {
-    req->result_fn = NULL;
+  req = mdns_requests[request_id];
+  if (req) {
+    mdns_requests[request_id] = NULL;
+    mdns_request_free(req);
   }
 }
 
 /**
  * @ingroup mdns
- * Search a specific service on the network.
+ * Search a specific service on the network. The caller is expected to caller
+ * mdns_search_stop(), passing the returned request_id, to deallocate the resources.
  * @param name The name of the service
  * @param service The service type, like "_http"
  * @param proto The service protocol, DNSSD_PROTO_TCP for TCP ("_tcp") and DNSSD_PROTO_UDP
@@ -2539,14 +2856,16 @@ mdns_search_service(const char *name, const char *service, enum mdns_sd_proto pr
 {
   s8_t slot;
   struct mdns_request *req;
+  err_t res;
   if (name) {
     LWIP_ERROR("mdns_search_service: Name too long", (strlen(name) <= MDNS_LABEL_MAXLEN), return ERR_VAL);
   }
   LWIP_ERROR("mdns_search_service: Service too long", (strlen(service) < MDNS_DOMAIN_MAXLEN), return ERR_VAL);
   LWIP_ERROR("mdns_search_service: Bad reqid pointer", request_id, return ERR_VAL);
   LWIP_ERROR("mdns_search_service: Bad proto (need TCP or UDP)", (proto == DNSSD_PROTO_TCP || proto == DNSSD_PROTO_UDP), return ERR_VAL);
+
   for (slot = 0; slot < MDNS_MAX_REQUESTS; slot++) {
-    if (mdns_requests[slot].result_fn == NULL) {
+    if (mdns_requests[slot] == NULL) {
       break;
     }
   }
@@ -2555,8 +2874,11 @@ mdns_search_service(const char *name, const char *service, enum mdns_sd_proto pr
     return ERR_MEM;
   }
 
-  req = &mdns_requests[slot];
-  memset(req, 0, sizeof(struct mdns_request));
+  req = mdns_request_alloc();
+  if (req == NULL) {
+    return ERR_MEM;
+  }
+  mdns_requests[slot] = req;
   req->result_fn = result_fn;
   req->arg = arg;
   req->proto = (u16_t)proto;
@@ -2564,9 +2886,24 @@ mdns_search_service(const char *name, const char *service, enum mdns_sd_proto pr
   if (proto == DNSSD_PROTO_UDP && strcmp(service, "_services._dns-sd") == 0) {
       req->only_ptr = 1; /* don't check other answers */
   }
-  mdns_domain_add_string(&req->service, service);
+  req->service = mdns_domain_alloc();
+  if (req->service == NULL) {
+    req->result_fn = NULL;
+    return ERR_VAL;
+  }
+  res = mdns_domain_add_string(req->service, service);
+  if (res != ERR_OK) {
+    req->result_fn = NULL;
+    mdns_domain_free(req->service);
+    return res;
+  }
   if (name) {
-    MEMCPY(&req->name, name, LWIP_MIN(MDNS_LABEL_MAXLEN, strlen(name)));
+    req->name = STRNDUP(name, MDNS_LABEL_MAXLEN);
+    if (req->name == NULL) {
+      req->result_fn = NULL;
+      mdns_domain_free(req->service);
+      return ERR_MEM;
+    }
   }
   /* save request id (slot) in pointer provided by caller */
   *request_id = slot;
