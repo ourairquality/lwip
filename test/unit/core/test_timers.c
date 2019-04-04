@@ -37,7 +37,7 @@ static int cyclic_fired;
 static void
 dummy_cyclic_handler(void)
 {
-   cyclic_fired = 1;
+   cyclic_fired++;
    lwip_sys_now += HANDLER_EXECUTION_TIME;
 }
 
@@ -60,12 +60,15 @@ do_test_cyclic_timers(u32_t offset)
   sys_check_timeouts();
   fail_unless(cyclic_fired == 1);
 
-  fail_unless((*list_head)->time == (u32_t)(lwip_sys_now + test_cyclic.interval_ms - HANDLER_EXECUTION_TIME));
+  fail_unless((*list_head)->time == (u32_t)(offset + (cyclic_fired + 1) * test_cyclic.interval_ms));
   
   sys_untimeout(lwip_cyclic_timer, &test_cyclic);
 
 
   /* verify "overload" - next cyclic timer execution is already overdue twice */
+  /* Variation on lwip: the handler is called once for each period that has
+     elapsed expecting to catch up, rather than the original lwip behavior of
+     skipping assuming an overload state. */
   lwip_sys_now = offset + 0;
   sys_timeout(test_cyclic.interval_ms, lwip_cyclic_timer, &test_cyclic);
 
@@ -75,9 +78,9 @@ do_test_cyclic_timers(u32_t offset)
 
   lwip_sys_now = offset + 2*test_cyclic.interval_ms;
   sys_check_timeouts();
-  fail_unless(cyclic_fired == 1);
+  fail_unless(cyclic_fired == 2);
 
-  fail_unless((*list_head)->time == (u32_t)(lwip_sys_now + test_cyclic.interval_ms));
+  fail_unless((*list_head)->time == (u32_t)(offset + (cyclic_fired + 1) * test_cyclic.interval_ms));
 }
 
 START_TEST(test_cyclic_timers)
