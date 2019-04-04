@@ -2888,20 +2888,21 @@ mdns_search_service(const char *name, const char *service, enum mdns_sd_proto pr
   }
   req->service = mdns_domain_alloc();
   if (req->service == NULL) {
-    req->result_fn = NULL;
+    mdns_requests[slot] = NULL;
+    mdns_request_free(req);
     return ERR_VAL;
   }
   res = mdns_domain_add_string(req->service, service);
   if (res != ERR_OK) {
-    req->result_fn = NULL;
-    mdns_domain_free(req->service);
+    mdns_requests[slot] = NULL;
+    mdns_request_free(req);
     return res;
   }
   if (name) {
     req->name = STRNDUP(name, MDNS_LABEL_MAXLEN);
     if (req->name == NULL) {
-      req->result_fn = NULL;
-      mdns_domain_free(req->service);
+      mdns_requests[slot] = NULL;
+      mdns_request_free(req);
       return ERR_MEM;
     }
   }
