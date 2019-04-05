@@ -284,11 +284,11 @@ pbuf_alloc(pbuf_layer layer, u16_t length, pbuf_type type)
       }
 
       /* If pbuf is to be allocated in RAM, allocate memory for it. */
-#ifdef ESP_OPEN_RTOS
+#if defined(ESP_OPEN_RTOS) && MALLOC_REGIONS
       uint32_t malloc_mask = set_malloc_regions(MALLOC_MASK_DRAM);
 #endif
       p = (struct pbuf *)mem_malloc(alloc_len);
-#ifdef ESP_OPEN_RTOS
+#if defined(ESP_OPEN_RTOS) && MALLOC_REGIONS
       set_malloc_regions(malloc_mask);
 #endif
       if (p == NULL) {
