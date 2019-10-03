@@ -85,9 +85,53 @@
 #define API_SELECT_CB_VAR_ALLOC(name, retblock)   API_VAR_ALLOC_EXT(struct lwip_select_cb, MEMP_SELECT_CB, name, retblock)
 #define API_SELECT_CB_VAR_FREE(name)              API_VAR_FREE(MEMP_SELECT_CB, name)
 
+#ifndef LWIP_SOCKET_HAVE_SA_LEN
+#define LWIP_SOCKET_HAVE_SA_LEN 0
+#endif /* LWIP_SOCKET_HAVE_SA_LEN */
+
+/* Address length safe read and write */
+#if LWIP_SOCKET_HAVE_SA_LEN
+
+#if LWIP_IPV4
+#define IP4ADDR_SOCKADDR_SET_LEN(sin) \
+      (sin)->sin_len = sizeof(struct sockaddr_in)
+#endif /* LWIP_IPV4 */
+
+#if LWIP_IPV6
+#define IP6ADDR_SOCKADDR_SET_LEN(sin6) \
+      (sin6)->sin6_len = sizeof(struct sockaddr_in6)
+#endif /* LWIP_IPV6 */
+
+#define IPADDR_SOCKADDR_GET_LEN(addr) \
+      (addr)->sa.sa_len
+
+#else
+
+#if LWIP_IPV4
+#define IP4ADDR_SOCKADDR_SET_LEN(addr)
+#endif /* LWIP_IPV4 */
+
+#if LWIP_IPV6
+#define IP6ADDR_SOCKADDR_SET_LEN(addr)
+#endif /* LWIP_IPV6 */
+
+#if LWIP_IPV4 && LWIP_IPV6
+#define IPADDR_SOCKADDR_GET_LEN(addr) \
+      ((addr)->sa.sa_family == AF_INET ? sizeof(struct sockaddr_in) \
+        : ((addr)->sa.sa_family == AF_INET6 ? sizeof(struct sockaddr_in6) : 0))
+#elif LWIP_IPV4
+#define IPADDR_SOCKADDR_GET_LEN(addr) sizeof(struct sockaddr_in)
+#elif LWIP_IPV6
+#define IPADDR_SOCKADDR_GET_LEN(addr) sizeof(struct sockaddr_in6)
+#else
+#define IPADDR_SOCKADDR_GET_LEN(addr) sizeof(struct sockaddr)
+#endif /* LWIP_IPV4 && LWIP_IPV6 */
+
+#endif /* LWIP_SOCKET_HAVE_SA_LEN */
+
 #if LWIP_IPV4
 #define IP4ADDR_PORT_TO_SOCKADDR(sin, ipaddr, port) do { \
-      (sin)->sin_len = sizeof(struct sockaddr_in); \
+      IP4ADDR_SOCKADDR_SET_LEN(sin); \
       (sin)->sin_family = AF_INET; \
       (sin)->sin_port = lwip_htons((port)); \
       inet_addr_from_ip4addr(&(sin)->sin_addr, ipaddr); \
@@ -99,7 +143,7 @@
 
 #if LWIP_IPV6
 #define IP6ADDR_PORT_TO_SOCKADDR(sin6, ipaddr, port) do { \
-      (sin6)->sin6_len = sizeof(struct sockaddr_in6); \
+      IP6ADDR_SOCKADDR_SET_LEN(sin6); \
       (sin6)->sin6_family = AF_INET6; \
       (sin6)->sin6_port = lwip_htons((port)); \
       (sin6)->sin6_flowinfo = 0; \
@@ -661,8 +705,8 @@ lwip_accept(int s, struct sockaddr *addr, socklen_t *addrlen)
    * so nsock->rcvevent is >= 1 here!
    */
   SYS_ARCH_PROTECT(lev);
-  recvevent = (s16_t)(-1 - newconn->socket);
-  newconn->socket = newsock;
+  recvevent = (s16_t)(-1 - newconn->callback_arg.socket);
+  newconn->callback_arg.socket = newsock;
   SYS_ARCH_UNPROTECT(lev);
 
   if (newconn->callback) {
@@ -690,8 +734,8 @@ lwip_accept(int s, struct sockaddr *addr, socklen_t *addrlen)
     }
 
     IPADDR_PORT_TO_SOCKADDR(&tempaddr, &naddr, port);
-    if (*addrlen > tempaddr.sa.sa_len) {
-      *addrlen = tempaddr.sa.sa_len;
+    if (*addrlen > IPADDR_SOCKADDR_GET_LEN(&tempaddr)) {
+      *addrlen = IPADDR_SOCKADDR_GET_LEN(&tempaddr);
     }
     MEMCPY(addr, &tempaddr, *addrlen);
 
@@ -1035,10 +1079,10 @@ lwip_sock_make_addr(struct netconn *conn, ip_addr_t *fromaddr, u16_t port,
 #endif /* LWIP_IPV4 && LWIP_IPV6 */
 
   IPADDR_PORT_TO_SOCKADDR(&saddr, fromaddr, port);
-  if (*fromlen < saddr.sa.sa_len) {
+  if (*fromlen < IPADDR_SOCKADDR_GET_LEN(&saddr)) {
     truncated = 1;
-  } else if (*fromlen > saddr.sa.sa_len) {
-    *fromlen = saddr.sa.sa_len;
+  } else if (*fromlen > IPADDR_SOCKADDR_GET_LEN(&saddr)) {
+    *fromlen = IPADDR_SOCKADDR_GET_LEN(&saddr);
   }
   MEMCPY(from, &saddr, *fromlen);
   return truncated;
@@ -1085,7 +1129,7 @@ lwip_recvfrom_udp_raw(struct lwip_sock *sock, int flags, struct msghdr *msg, u16
   u8_t apiflags;
   err_t err;
   u16_t buflen, copylen, copied;
-  int i;
+  msg_iovlen_t i;
 
   LWIP_UNUSED_ARG(dbg_s);
   LWIP_ERROR("lwip_recvfrom_udp_raw: invalid arguments", (msg->msg_iov != NULL) || (msg->msg_iovlen <= 0), return ERR_ARG;);
@@ -1275,7 +1319,7 @@ ssize_t
 lwip_recvmsg(int s, struct msghdr *message, int flags)
 {
   struct lwip_sock *sock;
-  int i;
+  msg_iovlen_t i;
   ssize_t buflen;
 
   LWIP_DEBUGF(SOCKETS_DEBUG, ("lwip_recvmsg(%d, message=%p, flags=0x%x)\n", s, (void *)message, flags));
@@ -1462,7 +1506,7 @@ lwip_sendmsg(int s, const struct msghdr *msg, int flags)
 #if LWIP_UDP || LWIP_RAW
   {
     struct netbuf chain_buf;
-    int i;
+    msg_iovlen_t i;
     ssize_t size = 0;
 
     LWIP_UNUSED_ARG(flags);
@@ -1729,7 +1773,7 @@ lwip_socket(int domain, int type, int protocol)
     set_errno(ENFILE);
     return -1;
   }
-  conn->socket = i;
+  conn->callback_arg.socket = i;
   done_socket(&sockets[i - LWIP_SOCKET_OFFSET]);
   LWIP_DEBUGF(SOCKETS_DEBUG, ("%d\n", i));
   set_errno(0);
@@ -2478,7 +2522,7 @@ event_callback(struct netconn *conn, enum netconn_evt evt, u16_t len)
 
   /* Get socket */
   if (conn) {
-    s = conn->socket;
+    s = conn->callback_arg.socket;
     if (s < 0) {
       /* Data comes in right away after an accept, even though
        * the server task might not have created a new socket yet.
@@ -2486,16 +2530,16 @@ event_callback(struct netconn *conn, enum netconn_evt evt, u16_t len)
        * will use the data later. Note that only receive events
        * can happen before the new socket is set up. */
       SYS_ARCH_PROTECT(lev);
-      if (conn->socket < 0) {
+      if (conn->callback_arg.socket < 0) {
         if (evt == NETCONN_EVT_RCVPLUS) {
           /* conn->socket is -1 on initialization
              lwip_accept adjusts sock->recvevent if conn->socket < -1 */
-          conn->socket--;
+          conn->callback_arg.socket--;
         }
         SYS_ARCH_UNPROTECT(lev);
         return;
       }
-      s = conn->socket;
+      s = conn->callback_arg.socket;
       SYS_ARCH_UNPROTECT(lev);
     }
 
@@ -2727,8 +2771,8 @@ lwip_getaddrname(int s, struct sockaddr *name, socklen_t *namelen, u8_t local)
   ip_addr_debug_print_val(SOCKETS_DEBUG, naddr);
   LWIP_DEBUGF(SOCKETS_DEBUG, (" port=%"U16_F")\n", port));
 
-  if (*namelen > saddr.sa.sa_len) {
-    *namelen = saddr.sa.sa_len;
+  if (*namelen > IPADDR_SOCKADDR_GET_LEN(&saddr)) {
+    *namelen = IPADDR_SOCKADDR_GET_LEN(&saddr);
   }
   MEMCPY(name, &saddr, *namelen);
 
