@@ -109,6 +109,23 @@ autoip_set_struct(struct netif *netif, struct autoip *autoip)
   netif_set_client_data(netif, LWIP_NETIF_CLIENT_DATA_INDEX_AUTOIP, autoip);
 }
 
+/**
+ * @ingroup autoip
+ * Remove a struct autoip previously set to the netif using autoip_set_struct()
+ *
+ * @param netif the netif for which to set the struct autoip
+ */
+void
+autoip_remove_struct(struct netif *netif)
+{
+  LWIP_ASSERT_CORE_LOCKED();
+  LWIP_ASSERT("netif != NULL", netif != NULL);
+  LWIP_ASSERT("netif has no struct autoip set",
+              netif_autoip_data(netif) != NULL);
+
+  netif_set_client_data(netif, LWIP_NETIF_CLIENT_DATA_INDEX_AUTOIP, NULL);
+}
+
 /** Restart AutoIP client and check the next address (conflict detected)
  *
  * @param netif The netif under AutoIP control
@@ -256,7 +273,7 @@ autoip_start(struct netif *netif)
 
     /* In accordance to RFC3927 section 2.1:
      * Keep using the same link local address as much as possible.
-     * Only when their is none or when their was a conflict, select a new one.
+     * Only when there is none or when there was a conflict, select a new one.
      */
     if (!ip4_addr_islinklocal(&autoip->llipaddr)) {
       autoip_create_addr(netif, &(autoip->llipaddr));

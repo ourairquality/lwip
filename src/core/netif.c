@@ -369,6 +369,9 @@ netif_add(struct netif *netif,
   netif->num = netif_num;
   netif->input = input;
 
+#if LWIP_ACD
+  netif->acd_list = NULL;
+#endif /* LWIP_ACD */
   NETIF_RESET_HINTS(netif);
 #if ENABLE_LOOPBACK && LWIP_LOOPBACK_MAX_PBUFS
   netif->loop_cnt_current = 0;
@@ -1741,6 +1744,10 @@ netif_find(const char *name)
   }
 
   num = (u8_t)atoi(&name[2]);
+  if (!num && (name[2] != '0')) {
+    /* this means atoi has failed */
+    return NULL;
+  }
 
   NETIF_FOREACH(netif) {
     if (num == netif->num &&
