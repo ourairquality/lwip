@@ -1,8 +1,3 @@
-/**
- * @file
- * SNMP MIB2 API
- */
-
 /*
  * Copyright (c) 2001-2004 Swedish Institute of Computer Science.
  * All rights reserved.
@@ -31,48 +26,37 @@
  *
  * This file is part of the lwIP TCP/IP stack.
  *
- * Author: Dirk Ziegelmeier <dziegel@gmx.de>
+ * Author: Simon Goldschmidt <goldsimon@gmx.de>
  *
  */
-#ifndef LWIP_HDR_APPS_SNMP_MIB2_H
-#define LWIP_HDR_APPS_SNMP_MIB2_H
+#ifndef LWIP_HDR_FUZZ_COMMON_H
+#define LWIP_HDR_FUZZ_COMMON_H
 
-#include "lwip/apps/snmp_opts.h"
+#include "lwip/opt.h"
+#include "lwip/arch.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#if LWIP_SNMP /* don't build if not configured for use in lwipopts.h */
-#if SNMP_LWIP_MIB2
+enum lwip_fuzz_type {
+  LWIP_FUZZ_SINGLE = 0,
+  LWIP_FUZZ_MULTIPACKET = 1,
+  LWIP_FUZZ_MULTIPACKET_TIME = 2
+};
 
-#include "lwip/apps/snmp_core.h"
+/* bitmask of what to test: */
+#define LWIP_FUZZ_DEFAULT    0x01
+#define LWIP_FUZZ_STATICARP  0x02
+#define LWIP_FUZZ_TCP_SERVER 0x04
+#define LWIP_FUZZ_TCP_CLIENT 0x08
+#define LWIP_FUZZ_UDP_SERVER 0x10
+#define LWIP_FUZZ_UDP_CLIENT 0x20
 
-extern const struct snmp_mib mib2;
-
-#if SNMP_USE_NETCONN
-#include "lwip/apps/snmp_threadsync.h"
-void snmp_mib2_lwip_synchronizer(snmp_threadsync_called_fn fn, void* arg);
-extern struct snmp_threadsync_instance snmp_mib2_lwip_locks;
-#endif
-
-#ifndef SNMP_SYSSERVICES
-#define SNMP_SYSSERVICES ((1 << 6) | (1 << 3) | ((IP_FORWARD) << 2))
-#endif
-
-void snmp_mib2_set_sysdescr(const u8_t* str, const u16_t* len); /* read-only be definition */
-void snmp_mib2_set_syscontact(u8_t *ocstr, u16_t *ocstrlen, u16_t bufsize);
-void snmp_mib2_set_syscontact_readonly(const u8_t *ocstr, const u16_t *ocstrlen);
-void snmp_mib2_set_sysname(u8_t *ocstr, u16_t *ocstrlen, u16_t bufsize);
-void snmp_mib2_set_sysname_readonly(const u8_t *ocstr, const u16_t *ocstrlen);
-void snmp_mib2_set_syslocation(u8_t *ocstr, u16_t *ocstrlen, u16_t bufsize);
-void snmp_mib2_set_syslocation_readonly(const u8_t *ocstr, const u16_t *ocstrlen);
-
-#endif /* SNMP_LWIP_MIB2 */
-#endif /* LWIP_SNMP */
+int lwip_fuzztest(int argc, char** argv, enum lwip_fuzz_type type, u32_t test_apps);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* LWIP_HDR_APPS_SNMP_MIB2_H */
+#endif /* LWIP_HDR_FUZZ_COMMON_H */

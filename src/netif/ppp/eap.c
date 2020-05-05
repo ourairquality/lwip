@@ -13,7 +13,7 @@
  *
  * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
  * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
- * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
  *
  * Original version by James Carlson
  *
@@ -1326,6 +1326,12 @@ static void eap_request(ppp_pcb *pcb, u_char *inp, int id, int len) {
 #endif /* USE_SRP */
 
 	/*
+	 * Ignore requests if we're not open
+	 */
+	if (pcb->eap.es_client.ea_state <= eapClosed)
+		return;
+
+	/*
 	 * Note: we update es_client.ea_id *only if* a Response
 	 * message is being generated.  Otherwise, we leave it the
 	 * same for duplicate detection purposes.
@@ -1417,7 +1423,7 @@ static void eap_request(ppp_pcb *pcb, u_char *inp, int id, int len) {
 		}
 
 		/* Not so likely to happen. */
-		if (vallen >= len + sizeof (rhostname)) {
+		if (len - vallen >= (int)sizeof (rhostname)) {
 			ppp_dbglog(("EAP: trimming really long peer name down"));
 			MEMCPY(rhostname, inp + vallen, sizeof (rhostname) - 1);
 			rhostname[sizeof (rhostname) - 1] = '\0';
@@ -1737,6 +1743,12 @@ static void eap_response(ppp_pcb *pcb, u_char *inp, int id, int len) {
 	u_char dig[SHA_DIGESTSIZE];
 #endif /* USE_SRP */
 
+	/*
+	 * Ignore responses if we're not open
+	 */
+	if (pcb->eap.es_server.ea_state <= eapClosed)
+		return;
+
 	if (pcb->eap.es_server.ea_id != id) {
 		ppp_dbglog(("EAP: discarding Response %d; expected ID %d", id,
 		    pcb->eap.es_server.ea_id));
@@ -1845,7 +1857,7 @@ static void eap_response(ppp_pcb *pcb, u_char *inp, int id, int len) {
 		}
 
 		/* Not so likely to happen. */
-		if (vallen >= len + sizeof (rhostname)) {
+		if (len - vallen >= (int)sizeof (rhostname)) {
 			ppp_dbglog(("EAP: trimming really long peer name down"));
 			MEMCPY(rhostname, inp + vallen, sizeof (rhostname) - 1);
 			rhostname[sizeof (rhostname) - 1] = '\0';
@@ -2043,10 +2055,16 @@ static void eap_success(ppp_pcb *pcb, u_char *inp, int id, int len) {
 static void eap_failure(ppp_pcb *pcb, u_char *inp, int id, int len) {
 	LWIP_UNUSED_ARG(id);
 
+	/*
+	 * Ignore failure messages if we're not open
+	 */
+	if (pcb->eap.es_client.ea_state <= eapClosed)
+		return;
+
 	if (!eap_client_active(pcb)) {
 		ppp_dbglog(("EAP unexpected failure message in state %s (%d)",
 		    eap_state_name(pcb->eap.es_client.ea_state),
-		    pcb->eap.es_client.ea_state);
+		    pcb->eap.es_client.ea_state));
 	}
 
 	if (pcb->settings.eap_req_time > 0) {
